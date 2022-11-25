@@ -4,7 +4,7 @@ use fuse3::{Errno, Result};
 use rand::Rng;
 use tokio::sync::RwLock;
 
-use crate::{Node, Fetch, Update};
+use crate::{Node, NodeData};
 
 
 pub struct Configuration {
@@ -63,7 +63,7 @@ impl Configuration {
             if let Some(ino) = group.get(*name) {
                 match self.nodes.get(ino) {
                     Some(node) => match node {
-                        Node::Data(_, _) => if i == nodes.len() - 1 {
+                        Node::Data(_) => if i == nodes.len() - 1 {
                             return Ok((*ino, node))
                         } else {
                             return Err(Errno::new_not_exist())
@@ -83,22 +83,29 @@ impl Configuration {
         return Err(Errno::new_not_exist())
     }
 
-    pub fn fetch<'a>(&'a self, ino: u64) -> Result<&'a Node> {
+    pub fn get<'a>(&'a self, ino: u64) -> Result<&'a Node> {
         self.nodes.get(&ino).ok_or_else(|| Errno::new_not_exist())
     }
 
-    pub fn update(&self, ino: u64, data: Vec<u8>) -> Result<()> {
-        let Node::Data(_, update) = self.fetch(ino)? else {
+    pub async fn fetch<'a>(&'a self, ino: u64) -> Result<Vec<u8>> {
+        let Node::Data(node_data) = self.get(ino)? else {
             return Err(Errno::new_is_dir());
         };
-        Ok(update(ino, data)?)
+        Ok(node_data.lock().await.fetch(ino).await?)
+    }
+
+    pub async fn update(&self, ino: u64, data: Vec<u8>) -> Result<()> {
+        let Node::Data(node_data) = self.get(ino)? else {
+            return Err(Errno::new_is_dir());
+        };
+        Ok(node_data.lock().await.update(ino, data).await?)
     }
 
     pub fn contains(&self, ino: u64, name: &str) -> Result<bool> {
         self.nodes.get(&ino)
             .ok_or_else(|| Errno::new_not_exist())
             .and_then(|group| match group {
-                Node::Data(_, _) => Err(Errno::new_not_exist()),
+                Node::Data(_) => Err(Errno::new_not_exist()),
                 Node::Group(group, _) => Ok(group.contains_key(name)),
             })
     }
@@ -107,7 +114,7 @@ impl Configuration {
         self.nodes.get(&ino)
             .ok_or_else(|| Errno::new_not_exist())
             .and_then(|group| match group {
-                Node::Data(_, _) => Err(Errno::new_not_exist()),
+                Node::Data(_) => Err(Errno::new_not_exist()),
                 Node::Group(group, _) => group.get(name)
                     .map(|i| i.clone())
                     .ok_or_else(|| Errno::new_not_exist()),
@@ -168,8 +175,8 @@ impl Configuration {
         }
     }
 
-    pub fn create_file(&mut self, parent: u64, name: &str, fetch: Fetch, update: Update) -> Result<u64> {
-        let ino = self.new_ino(Node::Data(fetch, update));
+    pub fn create_file(&mut self, parent: u64, name: &str, node_data: NodeData) -> Result<u64> {
+        let ino = self.new_ino(Node::Data(node_data));
         if let Some(Node::Group(group, _)) = self.nodes.get_mut(&parent) {
             let name = name.to_string();
             if let None = group.get(&name) {
@@ -215,8 +222,7 @@ impl Configuration {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-    use crate::{Configuration, Fetch, Update, Node};
+    use crate::{Configuration, Node, EmptyNodeData, CheckNodeData};
 
     #[tokio::test]
     async fn root() {
@@ -247,22 +253,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn find() {
+    async fn find_get() {
         let config = Configuration::new();
         
         let mut config = config.write().await;
         let root_ino = config.root();
-        let fetch: Fetch = Arc::new(|_| Ok(vec![]));
-        let update: Update = Arc::new(|_, _| Ok(()));
+        let node_data = EmptyNodeData::new();
+
 
         let dir1 = config.create_group(root_ino, "dir1").unwrap();
 
-        let file1 = config.create_file(root_ino, "file1", fetch.clone(), update.clone()).unwrap();
-        let file2 = config.create_file(dir1, "file2", fetch.clone(), update.clone()).unwrap();
+        let file1 = config.create_file(root_ino, "file1", node_data.clone()).unwrap();
+        let file2 = config.create_file(dir1, "file2", node_data.clone()).unwrap();
 
         assert_eq!(config.find("/file1").unwrap().0, file1);
         assert_eq!(config.find("/dir1").unwrap().0, dir1);
         assert_eq!(config.find("/dir1/file2").unwrap().0, file2);
+
+        assert!(matches!(config.get(dir1).unwrap(), Node::Group(_, _)));
+        assert!(matches!(config.get(file1).unwrap(), Node::Data(_)));
+        assert!(matches!(config.get(file2).unwrap(), Node::Data(_)));
     }
 
     #[tokio::test]
@@ -271,37 +281,23 @@ mod tests {
 
         let mut config = config.write().await;
         let root_ino = config.root();
-        let expected_fetch = Arc::new(Mutex::new(0u64));
-        let expected = expected_fetch.clone();
-        let fetch: Fetch = Arc::new(move |ino| {
-            let expected = expected.lock().unwrap();
-            assert!(ino.eq(&expected));
-            Ok(vec![])
-        });
-        let expected_update = Arc::new(Mutex::new((0u64, vec![0u8])));
-        let expected = expected_update.clone();
-        let update: Update = Arc::new(move |ino, data| {
-            let expected = expected.lock().unwrap();
-            assert!(expected.0.eq(&ino));
-            assert!(expected.1.eq(&data));
-            Ok(())
-        });
+        let node_data = CheckNodeData::new();
 
-        let file1 = config.create_file(root_ino, "file1", fetch.clone(), update.clone()).unwrap();
+        let file1 = config.create_file(root_ino, "file1", node_data.clone()).unwrap();
         let dir1 = config.create_group(root_ino, "dir1").unwrap();
-        let file2 = config.create_file(dir1, "file2", fetch.clone(), update.clone()).unwrap();
+        let file2 = config.create_file(dir1, "file2", node_data.clone()).unwrap();
 
-        *expected_fetch.lock().unwrap() = file1;
-        config.fetch(file1).unwrap();
+        node_data.lock().await.set_ex_fetch(file1, vec![3u8]);
+        assert_eq!(config.fetch(file1).await.unwrap(), vec![3u8]);
 
-        *expected_update.lock().unwrap() = (file1, vec![1u8]);
-        config.update(file1, vec![1u8]).unwrap();
+        node_data.lock().await.set_ex_update(file1, vec![1u8]);
+        config.update(file1, vec![1u8]).await.unwrap();
 
-        *expected_fetch.lock().unwrap() = file2;
-        config.fetch(file2).unwrap();
+        node_data.lock().await.set_ex_fetch(file2, vec![4u8]);
+        assert_eq!(config.fetch(file2).await.unwrap(), vec![4u8]);
 
-        *expected_update.lock().unwrap() = (file2, vec![2u8]);
-        config.update(file2, vec![2u8]).unwrap();
+        node_data.lock().await.set_ex_update(file2, vec![2u8]);
+        config.update(file2, vec![2u8]).await.unwrap();
     }
 
     #[tokio::test]
@@ -310,13 +306,11 @@ mod tests {
         
         let mut config = config.write().await;
         let root_ino = config.root();
-        let fetch: Fetch = Arc::new(|_| Ok(vec![]));
-        let update: Update = Arc::new(|_, _| Ok(()));
+        let node_data = EmptyNodeData::new();
 
+        let file1 = config.create_file(root_ino, "file1", node_data.clone()).unwrap();
         let dir1 = config.create_group(root_ino, "dir1").unwrap();
-
-        let file1 = config.create_file(root_ino, "file1", fetch.clone(), update.clone()).unwrap();
-        let file2 = config.create_file(dir1, "file2", fetch.clone(), update.clone()).unwrap();
+        let file2 = config.create_file(dir1, "file2", node_data.clone()).unwrap();
 
         assert_eq!(config.get_child(root_ino, "dir1").unwrap(), dir1);
         assert_eq!(config.get_child(root_ino, "file1").unwrap(), file1);
@@ -333,14 +327,13 @@ mod tests {
         
         let mut config = config.write().await;
         let root_ino = config.root();
-        let fetch: Fetch = Arc::new(|_| Ok(vec![]));
-        let update: Update = Arc::new(|_, _| Ok(()));
+        let node_data = EmptyNodeData::new();
 
         let dir1 = config.create_group(root_ino, "dir1").unwrap();
         let dir2 = config.create_group(root_ino, "dir2").unwrap();
 
-        let _file1 = config.create_file(root_ino, "file1", fetch.clone(), update.clone()).unwrap();
-        let _file2 = config.create_file(dir1, "file2", fetch.clone(), update.clone()).unwrap();
+        let _file1 = config.create_file(root_ino, "file1", node_data.clone()).unwrap();
+        let _file2 = config.create_file(dir1, "file2", node_data.clone()).unwrap();
 
         assert!(config.contains(root_ino, "file1").unwrap());
         config.mv(root_ino, dir1, "file1", "file").unwrap();
@@ -366,15 +359,14 @@ mod tests {
 
         let mut config = config.write().await;
         let root_ino = config.root();
-        let fetch: Fetch = Arc::new(|_| Ok(vec![]));
-        let update: Update = Arc::new(|_, _| Ok(()));
+        let node_data = EmptyNodeData::new();
 
         let dir1 = config.create_group(root_ino, "dir1").unwrap();
         let dir2 = config.create_group(root_ino, "dir2").unwrap();
 
-        let file1 = config.create_file(root_ino, "file1", fetch.clone(), update.clone()).unwrap();
-        let file2 = config.create_file(dir1, "file2", fetch.clone(), update.clone()).unwrap();
-        let file3 = config.create_file(dir2, "file3", fetch.clone(), update.clone()).unwrap();
+        let file1 = config.create_file(root_ino, "file1", node_data.clone()).unwrap();
+        let file2 = config.create_file(dir1, "file2", node_data.clone()).unwrap();
+        let file3 = config.create_file(dir2, "file3", node_data.clone()).unwrap();
 
         let root = config.get_root_mut().unwrap();
 
@@ -393,7 +385,7 @@ mod tests {
         };
         assert_eq!(*ino, file1);
         
-        let Node::Group(group, parent) = config.fetch(dir1).unwrap() else {
+        let Node::Group(group, parent) = config.get(dir1).unwrap() else {
             panic!("should be a group");
         };
         assert_eq!(*parent, root_ino);
@@ -403,7 +395,7 @@ mod tests {
         };
         assert_eq!(*ino, file2);
 
-        let Node::Group(group, parent) = config.fetch(dir2).unwrap() else {
+        let Node::Group(group, parent) = config.get(dir2).unwrap() else {
             panic!("should be a group");
         };
         assert_eq!(*parent, root_ino);

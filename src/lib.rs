@@ -1,19 +1,102 @@
 use std::{collections::HashMap, sync::Arc, time::{Duration, UNIX_EPOCH}, io};
 
-use fuse3::{Result, raw::{reply::FileAttr, Session}, FileType, MountOptions};
+use fuse3::{Result, raw::{reply::FileAttr, Session}, FileType, MountOptions, async_trait};
 use rand::Rng;
-use tokio::sync::{mpsc::{Sender, UnboundedReceiver, self, UnboundedSender}, RwLock};
+use tokio::{sync::{mpsc::{Sender, UnboundedReceiver, self, UnboundedSender}, RwLock, Mutex}, task::JoinHandle};
 
 mod configuration;
 mod fs;
 pub use configuration::Configuration;
 
-pub type Fetch = Arc<dyn Fn(u64) -> Result<Vec<u8>> + Send + Sync>;
-pub type Update = Arc<dyn Fn(u64, Vec<u8>) -> Result<()> + Send + Sync>;
+#[async_trait]
+pub trait Data {
+    async fn fetch(&mut self, ino: u64) -> Result<Vec<u8>>;
+    async fn update(&mut self, ino: u64, data: Vec<u8>) -> Result<()>;
+}
+
+type NodeData = Arc<Mutex<dyn Data + Send + Sync>>;
+
+pub struct EmptyNodeData;
+
+impl EmptyNodeData {
+    pub fn new() -> Arc<Mutex<EmptyNodeData>> {
+        Arc::new(Mutex::new(EmptyNodeData))
+    }
+}
+
+#[async_trait]
+impl Data for EmptyNodeData{
+    async fn fetch(&mut self, _ino: u64) -> Result<Vec<u8>> {
+        Ok(vec![])
+    }
+    async fn update(&mut self, _ino: u64, _data: Vec<u8>) -> Result<()> {
+        Ok(())
+    }
+}
+
+
+pub struct StoredNodeData {
+    data: HashMap<u64, Vec<u8>>
+}
+
+impl StoredNodeData {
+    pub fn new() -> Arc<Mutex<StoredNodeData>> {
+        Arc::new(Mutex::new(StoredNodeData{data: HashMap::new()}))
+    }
+}
+
+#[async_trait]
+impl Data for StoredNodeData{
+    async fn fetch(&mut self, ino: u64) -> Result<Vec<u8>> {
+        Ok(self.data.get(&ino).map(|d|d.clone()).unwrap_or_else(||{
+            self.data.insert(ino, vec![]);
+            vec![]
+        }))
+    }
+    async fn update(&mut self, ino: u64, data: Vec<u8>) -> Result<()> {
+        self.data.insert(ino, data);
+        Ok(())
+    }
+}
+
+
+pub struct CheckNodeData {
+    expected_fetch: (u64, Vec<u8>),
+    expected_update: (u64, Vec<u8>)
+}
+
+impl CheckNodeData {
+    pub fn new() -> Arc<Mutex<CheckNodeData>> {
+        Arc::new(Mutex::new(CheckNodeData{expected_fetch: (0, vec![]), expected_update: (0, vec![])}))
+    }
+
+    pub fn set_ex_fetch(&mut self, ino: u64, data: Vec<u8>) {
+        self.expected_fetch = (ino, data);
+    }
+
+    pub fn set_ex_update(&mut self, ino: u64, data: Vec<u8>) {
+        self.expected_update = (ino, data);
+    }
+}
+
+#[async_trait]
+impl Data for CheckNodeData{
+    async fn fetch(&mut self, ino: u64) -> Result<Vec<u8>> {
+        assert_eq!(self.expected_fetch.0, ino);
+        Ok(self.expected_fetch.1.clone())
+    }
+    async fn update(&mut self, ino: u64, data: Vec<u8>) -> Result<()> {
+        assert_eq!(self.expected_update.0, ino);
+        assert_eq!(self.expected_update.1, data);
+        Ok(())
+    }
+}
+
 pub enum Node {
-    Data(Fetch, Update),
+    Data(NodeData),
     Group(HashMap<String, u64>, u64)
 }
+
 
 pub enum Event {
     Mkdir{parent: u64, name: String, sender: Sender<Option<u64>>},
@@ -33,7 +116,7 @@ pub struct ConfigFS {
 }
 
 impl ConfigFS {
-    pub async fn mount(name: &str, mount_path: &str, configuration: Arc<RwLock<Configuration>>) -> io::Result<UnboundedReceiver<Event>> {
+    pub async fn mount(name: &str, mount_path: &str, configuration: Arc<RwLock<Configuration>>) -> io::Result<(UnboundedReceiver<Event>, JoinHandle<io::Result<()>>)> {
         let (tx, rx) = mpsc::unbounded_channel();
         let fs = ConfigFS{configuration, open: Arc::new(RwLock::new(HashMap::new())), sender: tx};
         let mut mount_options = MountOptions::default();
@@ -45,11 +128,12 @@ impl ConfigFS {
             .mount_with_unprivileged(fs, mount_path)
             .await?;
         
-        tokio::spawn(async {
-            handle.await
+        let join = tokio::spawn(async {
+            let res = handle.await;
+            res
         });
         
-        Ok(rx)
+        Ok((rx, join))
     }
 
     async fn open(&self, data: Vec<u8>) -> u64 {
@@ -69,10 +153,10 @@ impl ConfigFS {
         open.remove(&fh)
     }
 
-    fn create_attr(ino: u64, node: &Node) -> FileAttr {
+    async fn create_attr(ino: u64, node: &Node) -> FileAttr {
         match node {
-            Node::Data(fetch, _) => {
-                let res =fetch(ino).map(|d|d.len() as u64);
+            Node::Data(node_data) => {
+                let res = node_data.lock().await.fetch(ino).await.map(|d|d.len() as u64);
                 ConfigFS::create_file_attr(ino, res.unwrap_or(0))
             },
             Node::Group(group, _) => ConfigFS::create_dir_attr(ino, group.len() as u32),
@@ -128,56 +212,5 @@ impl ConfigFS {
 
 #[cfg(test)]
 mod test {
-    use super::*;
-
-    #[tokio::test]
-    async fn test() {
-        let config = Configuration::new();
-        let mut events = ConfigFS::mount("test", "mnt", config.clone()).await.unwrap();
-
-        while let Some(event) = events.recv().await {
-            match event {
-                Event::Mkdir { parent, name, sender } => {
-                    let mut config = config.write().await;
-                    match config.create_group(parent, &name) {
-                        Ok(ino) => {sender.send(Some(ino)).await.unwrap();},
-                        Err(_) => {sender.send(None).await.unwrap();},
-                    }
-                },
-                Event::Mk { parent, name, sender } => {
-                    let mut config = config.write().await;
-                    match config.create_file(
-                        parent, 
-                        &name, 
-                        Arc::new(|ino| Ok(format!("hello{}", ino).as_bytes().to_vec())),
-                        Arc::new(|ino, data| {println!("{}: '{}'", ino, String::from_utf8(data).unwrap()); Ok(())})
-                    ) {
-                        Ok(ino) => {sender.send(Some(ino)).await.unwrap();},
-                        Err(_) => {sender.send(None).await.unwrap();},
-                    }
-                },
-                Event::Rm { parent, name, sender } => {
-                    let mut config = config.write().await;
-                    match config.remove(parent, &name) {
-                        Ok(_) => {sender.send(true).await.unwrap();},
-                        Err(_) => {sender.send(false).await.unwrap();},
-                    }
-                },
-                Event::Mv { parent, new_parent, name, new_name, sender } => {
-                    let mut config = config.write().await;
-                    match config.mv(parent, new_parent, &name, &new_name) {
-                        Ok(_) => {sender.send(true).await.unwrap();},
-                        Err(_) => {sender.send(false).await.unwrap();},
-                    }
-                },
-                Event::Rename { parent, name, new_name, sender } => {
-                    let mut config = config.write().await;
-                    match config.rename(parent, &name, &new_name) {
-                        Ok(_) => {sender.send(true).await.unwrap();},
-                        Err(_) => {sender.send(false).await.unwrap();},
-                    }
-                },
-            }
-        }
-    }
+    
 }

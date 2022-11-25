@@ -18,13 +18,14 @@ impl Filesystem for ConfigFS {
     async fn destroy(&self, _req: Request) {}
 
     async fn lookup(&self, _req: Request, parent: u64, name: &OsStr) -> Result<ReplyEntry> {
+        println!("LOOKUP");
         let config = self.configuration.read().await;
         let child_ino = config.get_child(parent, &name.to_string_lossy().to_string())?;
-        let child = config.fetch(child_ino)?;
+        let child = config.get(child_ino)?;
 
         Ok(ReplyEntry {
             ttl: TTL,
-            attr: ConfigFS::create_attr(child_ino, child),
+            attr: ConfigFS::create_attr(child_ino, child).await,
             generation: 0,
         })
     }
@@ -38,12 +39,13 @@ impl Filesystem for ConfigFS {
         _fh: Option<u64>,
         _flags: u32,
     ) -> Result<ReplyAttr> {
+        println!("GETATTR");
         Ok(ReplyAttr {
             ttl: TTL,
             attr: {
                 let config = self.configuration.read().await;
-                let child = config.fetch(inode)?;
-                ConfigFS::create_attr(inode, child)
+                let child = config.get(inode)?;
+                ConfigFS::create_attr(inode, child).await
             },
         })
     }
@@ -55,12 +57,13 @@ impl Filesystem for ConfigFS {
         _fh: Option<u64>,
         _set_attr: SetAttr,
     ) -> Result<ReplyAttr> {
+        println!("SETATTR");
         Ok(ReplyAttr { 
             ttl: TTL, 
             attr: {
                 let config = self.configuration.read().await;
-                let child = config.fetch(inode)?;
-                ConfigFS::create_attr(inode, child)
+                let child = config.get(inode)?;
+                ConfigFS::create_attr(inode, child).await
             },
         })
     }
@@ -73,6 +76,7 @@ impl Filesystem for ConfigFS {
         _mode: u32,
         _umask: u32,
     ) -> Result<ReplyEntry> {
+        println!("MKDIR");
         let config = self.configuration.read().await;
         let false = config.contains(parent, &name.to_string_lossy().to_string())? else {
             return Err(Errno::new_exist())
@@ -93,9 +97,10 @@ impl Filesystem for ConfigFS {
     }
 
     async fn unlink(&self, _req: Request, parent: u64, name: &OsStr) -> Result<()> {
+        println!("UNLINK");
         let config = self.configuration.read().await;
         let child_ino = config.get_child(parent, &name.to_string_lossy().to_string())?;
-        let Node::Data(_, _) = config.fetch(child_ino)? else {
+        let Node::Data(_) = config.get(child_ino)? else {
             return Err(Errno::new_is_dir())
         };
         drop(config);
@@ -113,9 +118,10 @@ impl Filesystem for ConfigFS {
     }
 
     async fn rmdir(&self, _req: Request, parent: u64, name: &OsStr) -> Result<()> {
+        println!("RMDIR");
         let config = self.configuration.read().await;
         let child_ino = config.get_child(parent, &name.to_string_lossy().to_string())?;
-        let Node::Group(_, _) = config.fetch(child_ino)? else {
+        let Node::Group(_, _) = config.get(child_ino)? else {
             return Err(Errno::new_is_not_dir())
         };
         drop(config);
@@ -140,10 +146,11 @@ impl Filesystem for ConfigFS {
         new_parent: u64,
         new_name: &OsStr,
     ) -> Result<()> {
+        println!("RENAME");
         let config = self.configuration.read().await;
         config.get_child(parent, &name.to_string_lossy().to_string())?;
         
-        let Node::Group(_, _) = config.fetch(parent)? else {
+        let Node::Group(_, _) = config.get(parent)? else {
             return Err(Errno::new_not_exist())
         };
 
@@ -166,7 +173,7 @@ impl Filesystem for ConfigFS {
 
             Ok(())
         } else {
-            let Node::Group(_, _) = config.fetch(parent)? else {
+            let Node::Group(_, _) = config.get(parent)? else {
                 return Err(Errno::new_not_exist())
             };
 
@@ -192,12 +199,11 @@ impl Filesystem for ConfigFS {
     }
 
     async fn open(&self, _req: Request, inode: u64, _flags: u32) -> Result<ReplyOpen> {
+        println!("OPEN");
         let config = self.configuration.read().await;
-        let Node::Data(fetch, _) = config.fetch(inode)? else {
-            return Err(Errno::new_not_exist())
-        };
-
-        let data = fetch(inode)?;
+        println!("OPEN2");
+        let data = config.fetch(inode).await?;
+        println!("OPEN3");
         
         let fh = self.open(data).await;
 
@@ -215,6 +221,7 @@ impl Filesystem for ConfigFS {
         offset: u64,
         size: u32,
     ) -> Result<ReplyData> {
+        println!("READ");
         let open = self.open.read().await;
 
         let Some(data) = open.get(&fh) else {
@@ -250,6 +257,7 @@ impl Filesystem for ConfigFS {
         data: &[u8],
         _flags: u32,
     ) -> Result<ReplyWrite> {
+        println!("WRITE");
         let mut open = self.open.write().await;
 
         let Some(file_data) = open.get_mut(&fh) else {
@@ -259,17 +267,17 @@ impl Filesystem for ConfigFS {
         let offset = offset as usize;
         let mut i = 0;
 
-        while i + offset < data.len() && i < data.len() {
-            file_data[i as usize] = data[(i+offset) as usize];
+        while i + offset < file_data.len() && i < data.len() {
+            file_data[(i+offset) as usize] = data[i as usize];
             i += 1;
         }
 
         if (i as usize) < data.len() {
-            file_data.extend_from_slice(&data[i..])
+            file_data.extend_from_slice(&data[i..]);
         }
 
         Ok(ReplyWrite{
-            written: i as u32
+            written: data.len() as u32
         })
 
     }
@@ -283,12 +291,13 @@ impl Filesystem for ConfigFS {
         _lock_owner: u64,
         _flush: bool,
     ) -> Result<()> {
+        println!("RELEASE");
         let Some(data) = self.release(fh).await else {
             return Err(Errno::new_not_exist())
         };
 
         let config = self.configuration.read().await;
-        config.update(inode, data)?;
+        config.update(inode, data).await?;
 
         Ok(())
     }
@@ -313,6 +322,7 @@ impl Filesystem for ConfigFS {
         _mode: u32,
         _flags: u32,
     ) -> Result<ReplyCreated> {
+        println!("CREATE");
         let config = self.configuration.read().await;
         let false = config.contains(parent, &name.to_string_lossy().to_string())? else {
             return Err(Errno::new_exist())
@@ -330,11 +340,8 @@ impl Filesystem for ConfigFS {
         };
 
         let config = self.configuration.read().await;
-        let Node::Data(fetch, _) = config.fetch(ino)? else {
-            return Err(Errno::new_not_exist())
-        };
 
-        let data = fetch(ino)?;
+        let data = config.fetch(ino).await?;
         let size = data.len() as u64;
         
         let fh = self.open(data).await;
@@ -372,24 +379,26 @@ impl Filesystem for ConfigFS {
         offset: u64,
         _lock_owner: u64,
     ) -> Result<ReplyDirectoryPlus<Self::DirEntryPlusStream>> {
+        println!("READDIR");
         let config = self.configuration.read().await;
-        let Node::Group(group, parent) = config.fetch(dir)? else {
+        let Node::Group(group, parent) = config.get(dir)? else {
             return Err(Errno::new_not_exist())
         };
 
-        let pre_children =vec![
+        let mut children = Vec::with_capacity(2 + group.len());
+        children.extend(vec![
                 (dir, FileType::Directory, OsString::from("."), ConfigFS::create_dir_attr(dir, group.len()as u32), 1),
                 (*parent, FileType::Directory, OsString::from(".."), ConfigFS::create_dir_attr(*parent, 2), 2),
-        ].into_iter();
+        ]);
 
-        let children = pre_children
-            .chain(group.iter().enumerate().filter_map(
-                |(i, (name, ino))| {
-                    let attr = ConfigFS::create_attr(*ino, config.fetch(*ino).ok()?);
-    
-                    Some((*ino, attr.kind, OsString::from(name), attr, i as i64 + 3))
-                },
-            ))
+        for (i, (name, ino)) in group.iter().enumerate() {
+            if let Ok(node) = config.get(*ino) {
+                let attr = ConfigFS::create_attr(*ino, node).await;
+                children.push((*ino, attr.kind, OsString::from(name), attr, i as i64 + 3));
+            }
+        }
+
+        let children = children.into_iter()
             .map(|(inode, kind, name, attr, offset)| DirectoryEntryPlus {
                 inode,
                 generation: 0,
@@ -429,8 +438,9 @@ impl Filesystem for ConfigFS {
         _offset: u64,
         _whence: u32,
     ) -> Result<ReplyLSeek> {
+        println!("LSEEK");
         let config = self.configuration.read().await;
-        let Node::Data(_,_) = config.fetch(inode)? else {
+        let Node::Data(_) = config.get(inode)? else {
             return Err(Errno::new_not_exist())
         };
         
