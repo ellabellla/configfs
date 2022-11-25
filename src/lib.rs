@@ -223,14 +223,12 @@ mod test {
         println!("{:?}", tmp_mnt.path());
         let mnt = PathBuf::from(tmp_mnt.path());
 
-        if let Err(e) = run(mnt).await {
-            println!("{}", e)
-        }
-    } 
-
-    async fn run(mnt: PathBuf) -> Result<()> {
         let config = Configuration::new();
-        let (mut events, mount_handle) = ConfigFS::mount("test", &mnt.to_string_lossy().to_string(), config.clone()).await?;       
+        let (mut events, mount_handle) = ConfigFS::mount(
+            "test", 
+            &mnt.to_string_lossy().to_string(), 
+            config.clone()
+        ).await.unwrap();       
         let node_data = StoredNodeData::new();
         
         let fs_handle = tokio::task::spawn_blocking(move || {
@@ -329,6 +327,5 @@ mod test {
         if let Err(e) = mount_error {
             println!("{}", e);
         }
-        Ok(())
     }
 }
