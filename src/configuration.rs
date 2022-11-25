@@ -4,7 +4,7 @@ use fuse3::{Errno, Result};
 use rand::Rng;
 use tokio::sync::RwLock;
 
-use crate::{Node, NodeData};
+use crate::{Node, NodeData, serde::{ConfigurationInfo, FromInfo, InoDecoder}};
 
 pub struct Configuration {
     pub(crate) nodes: HashMap<u64, Node>,
@@ -17,6 +17,14 @@ impl Configuration {
         let mut nodes = HashMap::new();
         nodes.insert(ROOT, Node::Group(HashMap::new(), 0));
         Arc::new(RwLock::new(Configuration{nodes}))
+    }
+
+    pub fn load(info: ConfigurationInfo, decoder: &mut Box<dyn InoDecoder>) -> Arc<RwLock<Configuration>> {
+        Arc::new(RwLock::new(Configuration::from_info(info, decoder)))
+    }
+
+    pub fn extract_info(&self) -> ConfigurationInfo {
+        ConfigurationInfo::from(self)
     }
 
     fn split_path(path: &str) -> Vec<&str> {
