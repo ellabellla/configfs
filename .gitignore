@@ -1,3 +1,6 @@
+/example/target
+/example/Cargo.lock
+/example/tmp
 /target
 /Cargo.lock
 /tmp
