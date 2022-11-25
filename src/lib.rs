@@ -6,12 +6,14 @@ use tokio::{sync::{mpsc::{Sender, UnboundedReceiver, self, UnboundedSender}, RwL
 
 mod configuration;
 mod fs;
+mod serde;
 pub use configuration::Configuration;
 pub use fuse3::{Result, async_trait};
 
 #[async_trait]
 pub trait Data {
     async fn fetch(&mut self, ino: u64) -> Result<Vec<u8>>;
+    async fn size(&mut self, ino: u64) -> Result<u64>;
     async fn update(&mut self, ino: u64, data: Vec<u8>) -> Result<()>;
 }
 
@@ -29,6 +31,9 @@ impl EmptyNodeData {
 impl Data for EmptyNodeData{
     async fn fetch(&mut self, _ino: u64) -> Result<Vec<u8>> {
         Ok(vec![])
+    }
+    async fn size(&mut self, _ino: u64) -> Result<u64> {
+        Ok(0)
     }
     async fn update(&mut self, _ino: u64, _data: Vec<u8>) -> Result<()> {
         Ok(())
@@ -53,6 +58,9 @@ impl Data for StoredNodeData{
             self.data.insert(ino, vec![]);
             vec![]
         }))
+    }
+    async fn size(&mut self, ino: u64) -> Result<u64> {
+        Ok(self.data.get(&ino).map(|d|d.len()).unwrap_or(0) as u64)
     }
     async fn update(&mut self, ino: u64, data: Vec<u8>) -> Result<()> {
         self.data.insert(ino, data);
@@ -85,6 +93,9 @@ impl Data for CheckNodeData{
     async fn fetch(&mut self, ino: u64) -> Result<Vec<u8>> {
         assert_eq!(self.expected_fetch.0, ino);
         Ok(self.expected_fetch.1.clone())
+    }
+    async fn size(&mut self, _ino: u64) -> Result<u64> {
+        Ok(self.expected_fetch.1.len() as u64)
     }
     async fn update(&mut self, ino: u64, data: Vec<u8>) -> Result<()> {
         assert_eq!(self.expected_update.0, ino);
@@ -157,7 +168,7 @@ impl ConfigFS {
     async fn create_attr(ino: u64, node: &Node) -> FileAttr {
         match node {
             Node::Data(node_data) => {
-                let res = node_data.lock().await.fetch(ino).await.map(|d|d.len() as u64);
+                let res = node_data.lock().await.size(ino).await;
                 ConfigFS::create_file_attr(ino, res.unwrap_or(0))
             },
             Node::Group(group, _) => ConfigFS::create_dir_attr(ino, group.len() as u32),
