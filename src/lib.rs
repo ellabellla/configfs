@@ -1,12 +1,13 @@
 use std::{collections::HashMap, sync::Arc, time::{Duration, UNIX_EPOCH}, io};
 
-use fuse3::{Result, raw::{reply::FileAttr, Session}, FileType, MountOptions, async_trait};
+use fuse3::{raw::{reply::FileAttr, Session}, FileType, MountOptions};
 use rand::Rng;
 use tokio::{sync::{mpsc::{Sender, UnboundedReceiver, self, UnboundedSender}, RwLock, Mutex}, task::JoinHandle};
 
 mod configuration;
 mod fs;
 pub use configuration::Configuration;
+pub use fuse3::{Result, async_trait};
 
 #[async_trait]
 pub trait Data {
