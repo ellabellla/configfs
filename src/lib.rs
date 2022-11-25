@@ -212,5 +212,123 @@ impl ConfigFS {
 
 #[cfg(test)]
 mod test {
-    
+    use super::*;
+    use std::{fs::{self}, path::PathBuf};
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test() {
+        fs::create_dir_all("tmp").unwrap();
+        let tmp_mnt = TempDir::new_in("tmp").unwrap();
+        println!("{:?}", tmp_mnt.path());
+        let mnt = PathBuf::from(tmp_mnt.path());
+
+        if let Err(e) = run(mnt).await {
+            println!("{}", e)
+        }
+    } 
+
+    async fn run(mnt: PathBuf) -> Result<()> {
+        let config = Configuration::new();
+        let (mut events, mount_handle) = ConfigFS::mount("test", &mnt.to_string_lossy().to_string(), config.clone()).await?;       
+        let node_data = StoredNodeData::new();
+        
+        let fs_handle = tokio::task::spawn_blocking(move || {
+            let mut files = fs::read_dir(&mnt).unwrap();
+            assert!(matches!(files.next(), None));
+
+            let dir = mnt.join("dir");
+            fs::create_dir(&dir).unwrap();
+            assert!(dir.exists());
+
+            let dir2 = mnt.join("dir2");
+            fs::create_dir(&dir2).unwrap();
+            assert!(dir2.exists());
+
+            let file1 = mnt.join("file1");
+            fs::write(&file1, "testing").unwrap();
+            assert!(file1.exists());
+
+            assert_eq!(fs::read_to_string(&file1).unwrap(), "testing");
+
+            let file2 = dir.join("file2");
+            fs::write(&file2, "testing2").unwrap();
+            assert!(file2.exists());
+
+            assert_eq!(fs::read_to_string(&file2).unwrap(), "testing2");
+
+            let new_file2 = dir2.join("file");
+            fs::rename(&file2, &new_file2).unwrap();
+            let file2 = new_file2;
+            assert!(file2.exists());
+
+            let new_file1 = mnt.join("file");
+            fs::rename(&file1, &new_file1).unwrap();
+            let file1 = new_file1;
+            assert!(file1.exists());
+
+            let new_dir2 = dir.join("dir2");
+            fs::rename(&dir2, &new_dir2).unwrap();
+            let dir2 = new_dir2;
+            assert!(dir2.exists());
+        });
+
+        let event_handle = tokio::spawn(async move {
+            while let Some(event) = events.recv().await {
+                match event {
+                    Event::Mkdir { parent, name, sender } => {
+                        let mut config = config.write().await;
+                        match config.create_group(parent, &name) {
+                            Ok(ino) => {sender.send(Some(ino)).await.unwrap();},
+                            Err(_) => {sender.send(None).await.unwrap();},
+                        }
+                    },
+                    Event::Mk { parent, name, sender } => {
+                        let mut config = config.write().await;
+                        match config.create_file(
+                            parent, 
+                            &name, 
+                            node_data.clone()
+                        ) {
+                            Ok(ino) => {sender.send(Some(ino)).await.unwrap();},
+                            Err(_) => {sender.send(None).await.unwrap();},
+                        }
+                    },
+                    Event::Rm { parent, name, sender } => {
+                        let mut config = config.write().await;
+                        match config.remove(parent, &name) {
+                            Ok(_) => {sender.send(true).await.unwrap();},
+                            Err(_) => {sender.send(false).await.unwrap();},
+                        }
+                    },
+                    Event::Mv { parent, new_parent, name, new_name, sender } => {
+                        let mut config = config.write().await;
+                        match config.mv(parent, new_parent, &name, &new_name) {
+                            Ok(_) => {sender.send(true).await.unwrap();},
+                            Err(_) => {sender.send(false).await.unwrap();},
+                        }
+                    },
+                    Event::Rename { parent, name, new_name, sender } => {
+                        let mut config = config.write().await;
+                        match config.rename(parent, &name, &new_name) {
+                            Ok(_) => {sender.send(true).await.unwrap();},
+                            Err(_) => {sender.send(false).await.unwrap();},
+                        }
+                    },
+                }
+            }
+        });
+        
+        let (event_error, fs_error, mount_error) = tokio::join!(event_handle, fs_handle, mount_handle);
+        if let Err(e) = event_error {
+            println!("{}", e);
+        }
+        if let Err(e) = fs_error {
+            println!("{}", e);
+        }
+        if let Err(e) = mount_error {
+            println!("{}", e);
+        }
+        Ok(())
+    }
 }
