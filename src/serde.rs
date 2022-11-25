@@ -53,6 +53,24 @@ impl FromInfo for Configuration {
     }
 }
 
+
+pub struct TestDecode {
+    node_data: NodeData,
+}
+
+impl TestDecode {
+    pub fn new(node_data: NodeData) -> TestDecode {
+        TestDecode { node_data }
+    }
+}
+
+impl<'a> InoDecoder for TestDecode {
+    fn decode(&mut self, _ino: u64) -> Option<NodeData> {
+        Some(self.node_data.clone())
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use std::{fs::{File}};
@@ -62,22 +80,6 @@ mod tests {
     use crate::EmptyNodeData;
 
     use super::*;
-
-    struct TestDecode {
-        node_data: NodeData,
-    }
-
-    impl TestDecode {
-        pub fn new(node_data: NodeData) -> TestDecode {
-            TestDecode { node_data }
-        }
-    }
-
-    impl<'a> InoDecoder for TestDecode {
-        fn decode(&mut self, _ino: u64) -> Option<NodeData> {
-            Some(self.node_data.clone())
-        }
-    }
 
     #[tokio::test]
     async fn test() {

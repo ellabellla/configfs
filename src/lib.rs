@@ -6,7 +6,7 @@ use tokio::{sync::{mpsc::{Sender, UnboundedReceiver, self, UnboundedSender}, RwL
 
 mod configuration;
 mod fs;
-mod serde;
+pub mod serde;
 pub use configuration::Configuration;
 pub use fuse3::{Result, async_trait};
 
@@ -17,7 +17,7 @@ pub trait Data {
     async fn update(&mut self, ino: u64, data: Vec<u8>) -> Result<()>;
 }
 
-type NodeData = Arc<Mutex<dyn Data + Send + Sync>>;
+pub type NodeData = Arc<Mutex<dyn Data + Send + Sync>>;
 
 pub struct EmptyNodeData;
 
