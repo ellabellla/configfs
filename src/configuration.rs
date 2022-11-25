@@ -6,18 +6,17 @@ use tokio::sync::RwLock;
 
 use crate::{Node, NodeData};
 
-
 pub struct Configuration {
-    root: u64,
-    nodes: HashMap<u64, Node>,
+    pub(crate) nodes: HashMap<u64, Node>,
 }
+
+const ROOT: u64 = 0;
 
 impl Configuration {
     pub fn new() -> Arc<RwLock<Configuration>> {
-        let root = 1;
         let mut nodes = HashMap::new();
-        nodes.insert(root, Node::Group(HashMap::new(), 0));
-        Arc::new(RwLock::new(Configuration{nodes, root}))
+        nodes.insert(ROOT, Node::Group(HashMap::new(), 0));
+        Arc::new(RwLock::new(Configuration{nodes}))
     }
 
     fn split_path(path: &str) -> Vec<&str> {
@@ -36,11 +35,11 @@ impl Configuration {
     }
 
     pub fn root(&self) -> u64 {
-        self.root
+        ROOT
     }
 
     pub fn get_root<'a>(&'a self) -> Result<&'a HashMap<String, u64>> {
-        if let Some(Node::Group(root, _)) = self.nodes.get(&self.root) {
+        if let Some(Node::Group(root, _)) = self.nodes.get(&ROOT) {
             Ok(root)
         } else {
             Err(Errno::new_not_exist())
@@ -48,7 +47,7 @@ impl Configuration {
     }
 
     pub fn get_root_mut<'a>(&'a mut self) -> Result<&'a mut HashMap<String, u64>> {
-        if let Some(Node::Group(root, _)) = self.nodes.get_mut(&self.root) {
+        if let Some(Node::Group(root, _)) = self.nodes.get_mut(&ROOT) {
             Ok(root)
         } else {
             Err(Errno::new_not_exist())
