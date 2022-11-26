@@ -20,8 +20,8 @@ impl Filesystem for ConfigFS {
     async fn lookup(&self, _req: Request, parent: u64, name: &OsStr) -> Result<ReplyEntry> {
         println!("LOOKUP");
         let config = self.configuration.read().await;
-        let child_ino = config.get_child(parent, &name.to_string_lossy().to_string())?;
-        let child = config.get(child_ino)?;
+        let child_ino = config.get_child(parent, &name.to_string_lossy().to_string()).await?;
+        let child = config.get(child_ino).await?;
 
         Ok(ReplyEntry {
             ttl: TTL,
@@ -44,7 +44,7 @@ impl Filesystem for ConfigFS {
             ttl: TTL,
             attr: {
                 let config = self.configuration.read().await;
-                let child = config.get(inode)?;
+                let child = config.get(inode).await?;
                 ConfigFS::create_attr(inode, child).await
             },
         })
@@ -62,7 +62,7 @@ impl Filesystem for ConfigFS {
             ttl: TTL, 
             attr: {
                 let config = self.configuration.read().await;
-                let child = config.get(inode)?;
+                let child = config.get(inode).await?;
                 ConfigFS::create_attr(inode, child).await
             },
         })
@@ -78,14 +78,14 @@ impl Filesystem for ConfigFS {
     ) -> Result<ReplyEntry> {
         println!("MKDIR");
         let config = self.configuration.read().await;
-        let false = config.contains(parent, &name.to_string_lossy().to_string())? else {
+        let false = config.contains(parent, &name.to_string_lossy().to_string()).await? else {
             return Err(Errno::new_exist())
         };
 
         drop(config);
 
         let (tx, mut rx) = mpsc::channel(1);
-        let Ok(_) = self.sender.send(Event::Mkdir { parent, name: name.to_string_lossy().to_string(), sender: tx }) else {
+        let Ok(_) = self.sender.send(Event::MkGroup { parent, name: name.to_string_lossy().to_string(), sender: tx }) else {
             return Err(libc::ENOTCONN.into())
         };
 
@@ -99,8 +99,8 @@ impl Filesystem for ConfigFS {
     async fn unlink(&self, _req: Request, parent: u64, name: &OsStr) -> Result<()> {
         println!("UNLINK");
         let config = self.configuration.read().await;
-        let child_ino = config.get_child(parent, &name.to_string_lossy().to_string())?;
-        let Node::Data(_) = config.get(child_ino)? else {
+        let child_ino = config.get_child(parent, &name.to_string_lossy().to_string()).await?;
+        let Node::Data(_) = config.get(child_ino).await? else {
             return Err(Errno::new_is_dir())
         };
         drop(config);
@@ -120,8 +120,8 @@ impl Filesystem for ConfigFS {
     async fn rmdir(&self, _req: Request, parent: u64, name: &OsStr) -> Result<()> {
         println!("RMDIR");
         let config = self.configuration.read().await;
-        let child_ino = config.get_child(parent, &name.to_string_lossy().to_string())?;
-        let Node::Group(_, _) = config.get(child_ino)? else {
+        let child_ino = config.get_child(parent, &name.to_string_lossy().to_string()).await?;
+        let Node::Group(_, _) = config.get(child_ino).await? else {
             return Err(Errno::new_is_not_dir())
         };
         drop(config);
@@ -148,9 +148,9 @@ impl Filesystem for ConfigFS {
     ) -> Result<()> {
         println!("RENAME");
         let config = self.configuration.read().await;
-        config.get_child(parent, &name.to_string_lossy().to_string())?;
+        config.get_child(parent, &name.to_string_lossy().to_string()).await?;
         
-        let Node::Group(_, _) = config.get(parent)? else {
+        let Node::Group(_, _) = config.get(parent).await? else {
             return Err(Errno::new_not_exist())
         };
 
@@ -173,7 +173,7 @@ impl Filesystem for ConfigFS {
 
             Ok(())
         } else {
-            let Node::Group(_, _) = config.get(parent)? else {
+            let Node::Group(_, _) = config.get(parent).await? else {
                 return Err(Errno::new_not_exist())
             };
 
@@ -202,7 +202,7 @@ impl Filesystem for ConfigFS {
         println!("OPEN");
         let config = self.configuration.read().await;
         println!("OPEN2");
-        let data = config.fetch(inode).await?;
+        let data = config.fetch_data(inode).await?;
         println!("OPEN3");
         
         let fh = self.open(data).await;
@@ -297,7 +297,7 @@ impl Filesystem for ConfigFS {
         };
 
         let config = self.configuration.read().await;
-        config.update(inode, data).await?;
+        config.update_data(inode, data).await?;
 
         Ok(())
     }
@@ -324,14 +324,14 @@ impl Filesystem for ConfigFS {
     ) -> Result<ReplyCreated> {
         println!("CREATE");
         let config = self.configuration.read().await;
-        let false = config.contains(parent, &name.to_string_lossy().to_string())? else {
+        let false = config.contains(parent, &name.to_string_lossy().to_string()).await? else {
             return Err(Errno::new_exist())
         };
 
         drop(config);
 
         let (tx, mut rx) = mpsc::channel(1);
-        let Ok(_) = self.sender.send(Event::Mk { parent, name: name.to_string_lossy().to_string(), sender: tx }) else {
+        let Ok(_) = self.sender.send(Event::MkData { parent, name: name.to_string_lossy().to_string(), sender: tx }) else {
             return Err(libc::ENOTCONN.into())
         };
 
@@ -341,7 +341,7 @@ impl Filesystem for ConfigFS {
 
         let config = self.configuration.read().await;
 
-        let data = config.fetch(ino).await?;
+        let data = config.fetch_data(ino).await?;
         let size = data.len() as u64;
         
         let fh = self.open(data).await;
@@ -381,7 +381,7 @@ impl Filesystem for ConfigFS {
     ) -> Result<ReplyDirectoryPlus<Self::DirEntryPlusStream>> {
         println!("READDIR");
         let config = self.configuration.read().await;
-        let Node::Group(group, parent) = config.get(dir)? else {
+        let Node::Group(group, parent) = config.get(dir).await? else {
             return Err(Errno::new_not_exist())
         };
 
@@ -392,7 +392,7 @@ impl Filesystem for ConfigFS {
         ]);
 
         for (i, (name, ino)) in group.iter().enumerate() {
-            if let Ok(node) = config.get(*ino) {
+            if let Ok(node) = config.get(*ino).await {
                 let attr = ConfigFS::create_attr(*ino, node).await;
                 children.push((*ino, attr.kind, OsString::from(name), attr, i as i64 + 3));
             }
@@ -440,7 +440,7 @@ impl Filesystem for ConfigFS {
     ) -> Result<ReplyLSeek> {
         println!("LSEEK");
         let config = self.configuration.read().await;
-        let Node::Data(_) = config.get(inode)? else {
+        let Node::Data(_) = config.get(inode).await? else {
             return Err(Errno::new_not_exist())
         };
         

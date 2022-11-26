@@ -2,15 +2,30 @@ use std::collections::HashMap;
 
 use serde::{Serialize, Deserialize};
 
-use crate::{Node, Configuration, NodeData};
+use crate::{Node, Configuration, NodeData, NodeObject, InoLookup};
+
+pub enum DecodeType {
+    Data(NodeData),
+    Object(NodeObject),
+}
+
+impl From<DecodeType> for Node {
+    fn from(d: DecodeType) -> Self {
+        match d {
+            DecodeType::Data(d) => Node::Data(d),
+            DecodeType::Object(o) => Node::Object(o),
+        }
+    }
+}
 
 pub trait InoDecoder {
-    fn decode(&mut self, ino: u64) -> Option<NodeData>;
+    fn decode(&mut self, ino: u64) -> Option<DecodeType>;
 }
 
 #[derive(Serialize, Deserialize)]
 pub enum  NodeInfo {
     Data,
+    Object,
     Group(HashMap<String, u64>, u64),
 }
 
@@ -26,6 +41,7 @@ impl ConfigurationInfo {
             match node {
                 Node::Data(_) => nodes.insert(*ino, NodeInfo::Data),
                 Node::Group(group, parent) => nodes.insert(*ino, NodeInfo::Group(group.to_owned(), *parent)),
+                Node::Object(_) => nodes.insert(*ino, NodeInfo::Object),
             };
         }
 
@@ -34,22 +50,22 @@ impl ConfigurationInfo {
 }
 
 pub trait FromInfo {
-    fn from_info(info: ConfigurationInfo, decoder: &mut Box<dyn InoDecoder>) -> Self;
+    fn from_info(info: ConfigurationInfo, decoder: &mut Box<dyn InoDecoder>, ino_lookup: InoLookup) -> Self;
 }
 
 impl FromInfo for Configuration {
-    fn from_info(info: ConfigurationInfo, decoder: &mut Box<dyn InoDecoder>) -> Self {
+    fn from_info(info: ConfigurationInfo, decoder: &mut Box<dyn InoDecoder>, ino_lookup: InoLookup) -> Self {
         let mut nodes = HashMap::new();
 
         for (ino, node) in info.0 {
             match node {
-                NodeInfo::Data => decoder.decode(ino)
-                    .and_then(|data| nodes.insert(ino, Node::Data(data))),
                 NodeInfo::Group(group, parent) => nodes.insert(ino, Node::Group(group, parent)),
+                _ => decoder.decode(ino)
+                .and_then(|data| nodes.insert(ino, Node::from(data))),
             };
         }
 
-        Configuration { nodes }
+        Configuration { nodes, ino_lookup}
     }
 }
 
@@ -65,8 +81,8 @@ impl TestDecode {
 }
 
 impl<'a> InoDecoder for TestDecode {
-    fn decode(&mut self, _ino: u64) -> Option<NodeData> {
-        Some(self.node_data.clone())
+    fn decode(&mut self, _ino: u64) -> Option<DecodeType> {
+        Some(DecodeType::Data(self.node_data.clone()))
     }
 }
 
@@ -77,20 +93,20 @@ mod tests {
 
     use tempfile::{NamedTempFile};
 
-    use crate::EmptyNodeData;
+    use crate::{EmptyNodeData, EmptyInoLookup};
 
     use super::*;
 
     #[tokio::test]
     async fn test() {
-        let config = Configuration::new();
+        let config = Configuration::new(EmptyInoLookup::new());
         let mut config = config.write().await;
         let root_ino = config.root();
         let node_data = EmptyNodeData::new();
 
-        let _file1 = config.create_file(root_ino, "file1", node_data.clone()).unwrap();
-        let dir1 = config.create_group(root_ino, "dir1").unwrap();
-        let _file2 = config.create_file(dir1, "file2", node_data.clone()).unwrap();
+        let _file1 = config.create_data(root_ino, "file1", node_data.clone()).await.unwrap();
+        let dir1 = config.create_group(root_ino, "dir1").await.unwrap();
+        let _file2 = config.create_data(dir1, "file2", node_data.clone()).await.unwrap();
 
         let info = config.extract_info();
 
@@ -126,6 +142,7 @@ mod tests {
 
                     true
                 },
+                NodeInfo::Object => matches!(se_node, NodeInfo::Object),
             })
         }
 
@@ -161,6 +178,7 @@ mod tests {
 
                     true
                 },
+                Node::Object(_) => matches!(se_node, Node::Object(_))
             })
         }
     }

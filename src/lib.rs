@@ -19,6 +19,54 @@ pub trait Data {
 
 pub type NodeData = Arc<Mutex<dyn Data + Send + Sync>>;
 
+pub enum EntryType {
+    Data,
+    Object
+} 
+
+#[async_trait]
+pub trait Object {
+    async fn entires(&self, ino: u64) -> Result<Vec<(u64, EntryType)>>;
+    async fn find(&self, ino: u64, path: Vec<String>) -> Result<(u64, EntryType)>;
+    async fn lookup(&self, ino: u64, name: String) -> Result<(u64, EntryType)>;
+    async fn contains(&self, ino: u64) -> Result<bool>;
+
+    async fn mk_data(&mut self, ino: u64, name: String) -> Result<u64>;
+    async fn mk_obj(&mut self, ino: u64, name: String) -> Result<u64>;
+    async fn mv(&mut self, parent: u64, new_parent: u64, name: String, new_name: String) -> Result<()>;
+    async fn rm(&mut self, ino: u64, name: String) -> Result<()>;
+    async fn rn(&mut self, ino: u64, name: String, new_name: String) -> Result<()>;
+}
+
+pub trait NodeObjectTrait: Object + Data {}
+pub type NodeObject = Arc<Mutex<dyn NodeObjectTrait + Send + Sync>>;
+
+#[async_trait]
+pub trait Lookup {
+    async fn lookup(&self, ino: u64) -> bool;
+    async fn redirect(&self, ino: u64) -> u64;
+}
+
+pub type InoLookup = Arc<dyn Lookup + Send + Sync>;
+
+pub struct EmptyInoLookup;
+
+impl EmptyInoLookup {
+    pub fn new() -> InoLookup {
+        Arc::new(EmptyInoLookup)
+    }
+}
+
+#[async_trait]
+impl Lookup for EmptyInoLookup {
+    async fn lookup(&self, _ino: u64) -> bool {
+        false
+    }
+    async fn redirect(&self, ino: u64) -> u64 {
+        ino
+    }
+}
+
 pub struct EmptyNodeData;
 
 impl EmptyNodeData {
@@ -106,13 +154,14 @@ impl Data for CheckNodeData{
 
 pub enum Node {
     Data(NodeData),
+    Object(NodeObject),
     Group(HashMap<String, u64>, u64)
 }
 
 
 pub enum Event {
-    Mkdir{parent: u64, name: String, sender: Sender<Option<u64>>},
-    Mk{parent: u64, name: String, sender: Sender<Option<u64>>},
+    MkGroup{parent: u64, name: String, sender: Sender<Option<u64>>},
+    MkData{parent: u64, name: String, sender: Sender<Option<u64>>},
     Rm{parent: u64, name: String, sender: Sender<bool>},
     Mv{parent: u64, new_parent: u64, name: String, new_name:String, sender: Sender<bool>},
     Rename{parent: u64, name: String, new_name:String, sender: Sender<bool>},
@@ -130,7 +179,11 @@ pub struct ConfigFS {
 impl ConfigFS {
     pub async fn mount(name: &str, mount_path: &str, configuration: Arc<RwLock<Configuration>>) -> io::Result<(UnboundedReceiver<Event>, JoinHandle<io::Result<()>>)> {
         let (tx, rx) = mpsc::unbounded_channel();
-        let fs = ConfigFS{configuration, open: Arc::new(RwLock::new(HashMap::new())), sender: tx};
+        let fs = ConfigFS{
+            configuration, 
+            open: Arc::new(RwLock::new(HashMap::new())), 
+            sender: tx
+        };
         let mut mount_options = MountOptions::default();
         mount_options
             .force_readdir_plus(true)
@@ -170,6 +223,10 @@ impl ConfigFS {
             Node::Data(node_data) => {
                 let res = node_data.lock().await.size(ino).await;
                 ConfigFS::create_file_attr(ino, res.unwrap_or(0))
+            },
+            Node::Object(obj) => {
+                let res = obj.lock().await.size(ino).await;
+                ConfigFS::create_dir_attr(ino, res.unwrap_or(0) as u32 + 2)
             },
             Node::Group(group, _) => ConfigFS::create_dir_attr(ino, group.len() as u32),
         }
@@ -235,7 +292,7 @@ mod test {
         println!("{:?}", tmp_mnt.path());
         let mnt = PathBuf::from(tmp_mnt.path());
 
-        let config = Configuration::new();
+        let config = Configuration::new(EmptyInoLookup::new());
         let (mut events, mount_handle) = ConfigFS::mount(
             "test", 
             &mnt.to_string_lossy().to_string(), 
@@ -286,41 +343,41 @@ mod test {
         let event_handle = tokio::spawn(async move {
             while let Some(event) = events.recv().await {
                 match event {
-                    Event::Mkdir { parent, name, sender } => {
+                    Event::MkGroup { parent, name, sender } => {
                         let mut config = config.write().await;
-                        match config.create_group(parent, &name) {
+                        match config.create_group(parent, &name).await {
                             Ok(ino) => {sender.send(Some(ino)).await.unwrap();},
                             Err(_) => {sender.send(None).await.unwrap();},
                         }
                     },
-                    Event::Mk { parent, name, sender } => {
+                    Event::MkData { parent, name, sender } => {
                         let mut config = config.write().await;
-                        match config.create_file(
+                        match config.create_data(
                             parent, 
                             &name, 
                             node_data.clone()
-                        ) {
+                        ).await {
                             Ok(ino) => {sender.send(Some(ino)).await.unwrap();},
                             Err(_) => {sender.send(None).await.unwrap();},
                         }
                     },
                     Event::Rm { parent, name, sender } => {
                         let mut config = config.write().await;
-                        match config.remove(parent, &name) {
+                        match config.remove(parent, &name).await {
                             Ok(_) => {sender.send(true).await.unwrap();},
                             Err(_) => {sender.send(false).await.unwrap();},
                         }
                     },
                     Event::Mv { parent, new_parent, name, new_name, sender } => {
                         let mut config = config.write().await;
-                        match config.mv(parent, new_parent, &name, &new_name) {
+                        match config.mv(parent, new_parent, &name, &new_name).await {
                             Ok(_) => {sender.send(true).await.unwrap();},
                             Err(_) => {sender.send(false).await.unwrap();},
                         }
                     },
                     Event::Rename { parent, name, new_name, sender } => {
                         let mut config = config.write().await;
-                        match config.rename(parent, &name, &new_name) {
+                        match config.rename(parent, &name, &new_name).await {
                             Ok(_) => {sender.send(true).await.unwrap();},
                             Err(_) => {sender.send(false).await.unwrap();},
                         }
