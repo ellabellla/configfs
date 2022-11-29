@@ -16,7 +16,7 @@ pub struct FS {
     open: Arc<RwLock<HashMap<u64, (String, Vec<u8>)>>>,
 }
 
-fn split_path<'a>(path: &'a str) -> Vec<&'a str> {
+pub(crate) fn split_path<'a>(path: &'a str) -> Vec<&'a str> {
     path.split("/").into_iter().filter(|s| *s != "").collect()
 }
 
@@ -126,7 +126,6 @@ impl PathFilesystem for FS {
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
         let (config, path) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
-        let path: Vec<&str> = split_path(path);
         let (entry_type, size) = config.read().await.lookup(&path, &name.to_string_lossy().to_string()).await?;
         Ok(ReplyEntry{
             ttl: TTL,
@@ -156,7 +155,6 @@ impl PathFilesystem for FS {
             let mount = self.mount.read().await;
             let parent = path.ok_or_else(|| Errno::new_not_exist())?.to_string_lossy().to_string();
             let (config, path) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
-            let path: Vec<&str> = split_path(path);
             let (entry_type, size) = config.read().await.lookup_path(&path).await?;
             Ok(
                 ReplyAttr{
@@ -187,7 +185,6 @@ impl PathFilesystem for FS {
             let mount = self.mount.read().await;
             let parent = path.ok_or_else(|| Errno::new_not_exist())?.to_string_lossy().to_string();
             let (config, path) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
-            let path: Vec<&str> = split_path(path);
             let (entry_type, size) = config.read().await.lookup_path(&path).await?;
             Ok(
                 ReplyAttr{
@@ -209,9 +206,7 @@ impl PathFilesystem for FS {
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
         let (config, path) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
-        let parent: Vec<&str> = split_path(path);
         let mut config = config.write().await;
-        config.mk_obj(&parent, &name.to_string_lossy().to_string()).await?;
         Ok(
             ReplyEntry{
                 ttl: TTL,
@@ -223,8 +218,7 @@ impl PathFilesystem for FS {
     async fn unlink(&self, _req: Request, parent: &OsStr, name: &OsStr) -> Result<()> {
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
-        let (config, path) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
-        let parent: Vec<&str> = split_path(path);
+        let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
         let mut config = config.write().await;
         config.rm(&parent, &name.to_string_lossy().to_string()).await?;
         Ok(())
@@ -233,8 +227,7 @@ impl PathFilesystem for FS {
     async fn rmdir(&self, _req: Request, parent: &OsStr, name: &OsStr) -> Result<()> {
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
-        let (config, path) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
-        let parent: Vec<&str> = split_path(path);
+        let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
         let mut config = config.write().await;
         config.rm(&parent, &name.to_string_lossy().to_string()).await?;
         Ok(())
@@ -256,17 +249,14 @@ impl PathFilesystem for FS {
         let old_name = origin_name.to_string_lossy().to_string();
         let new_name = name.to_string_lossy().to_string();
 
-        let (config, path) = mount.resolve(&old_parent).ok_or_else(|| Errno::new_not_exist())?;
-        let mut config = config.write().await;
 
         if old_parent == new_parent {
-            let old_parent: Vec<&str> = split_path(path);
+            let (config, old_parent) = mount.resolve(&old_parent).ok_or_else(|| Errno::new_not_exist())?;
+            let mut config = config.write().await;
+
             config.rn(&old_parent, &old_name, &new_name).await?;
         } else {
-            let (configs, old_parent, new_parent) = mount.resolve_pair(&old_parent, &new_parent).ok_or_else(|| Errno::new_not_exist())?;
-
-            let mut old_parent: Vec<&str> = split_path(old_parent);
-            let mut new_parent: Vec<&str> = split_path(new_parent);
+            let (configs, mut old_parent, mut new_parent) = mount.resolve_pair(&old_parent, &new_parent).ok_or_else(|| Errno::new_not_exist())?;
 
             match configs {
                 PathPair::Single(config) => {
@@ -292,7 +282,7 @@ impl PathFilesystem for FS {
     
                         config_b.mk_data(&new_parent, &new_name).await?;
                         new_parent.push(&new_name);
-                        config.update(&new_parent, data).await?;
+                        config_b.update(&new_parent, data).await?;
                     }
                 },
             }
@@ -305,7 +295,6 @@ impl PathFilesystem for FS {
         let mount = self.mount.read().await;
         let path_str = path.to_string_lossy().to_string();
         let (config, path) = mount.resolve(&path_str).ok_or_else(|| Errno::new_not_exist())?;
-        let path: Vec<&str> = split_path(path);
         let mut config = config.write().await;
 
         let (entry_type, _) = config.lookup_path(&path).await?; 
@@ -401,7 +390,6 @@ impl PathFilesystem for FS {
 
         let mount = self.mount.read().await;
         let (config, path) = mount.resolve(&path).ok_or_else(|| Errno::new_not_exist())?;
-        let path: Vec<&str> = split_path(path);
         let mut config = config.write().await;
         config.update(&path, data).await?;
 
@@ -443,8 +431,7 @@ impl PathFilesystem for FS {
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
         let file_path = format!("{}/{}", parent, name.to_string_lossy().to_string());
-        let (config, path) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
-        let parent: Vec<&str> = split_path(path);
+        let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
         let mut config = config.write().await;
 
         config.mk_data(&parent, &name.to_string_lossy().to_string()).await?;
@@ -485,8 +472,7 @@ impl PathFilesystem for FS {
     ) -> Result<ReplyDirectoryPlus<Self::DirEntryPlusStream>> {
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
-        let (config, path) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
-        let parent: Vec<&str> = split_path(path);
+        let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
         let config = config.read().await;
 
         let entries = config.entires(&parent).await?;
