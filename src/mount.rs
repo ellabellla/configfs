@@ -155,7 +155,7 @@ impl Mount {
 mod tests {
     use fuse3::{async_trait, Result, Errno};
 
-    use crate::config::{ConfigHooks, EntryType};
+    use crate::config::{ComplexConfigHook, EntryType};
 
     use super::*;
 
@@ -163,12 +163,12 @@ mod tests {
 
     impl EmptyConfig {
         pub fn new() -> Configuration {
-            Arc::new(RwLock::new(EmptyConfig))
+            Configuration::Complex(Arc::new(RwLock::new(EmptyConfig)))
         }
     }
 
     #[async_trait]
-    impl ConfigHooks for EmptyConfig {
+    impl ComplexConfigHook for EmptyConfig {
         async fn entires(&self, _parent: &Vec<&str>) -> Result<Vec<&str>> {
             Err(Errno::new_not_exist())
         }

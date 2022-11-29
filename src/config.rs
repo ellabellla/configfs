@@ -3,16 +3,22 @@ use std::{sync::Arc};
 use fuse3::{async_trait, Result};
 use tokio::sync::RwLock;
 
+#[derive(Clone)]
+pub enum Configuration {
+    Basic(BasicConfiguration),
+    Complex(ComplexConfiguration),
+}
+
 #[derive(Clone, Copy)]
 pub enum EntryType {
     Object,
     Data,
 }
 
-pub type Configuration = Arc<RwLock<dyn ConfigHooks + Send + Sync>>;
+pub type ComplexConfiguration = Arc<RwLock<dyn ComplexConfigHook + Send + Sync>>;
 
 #[async_trait]
-pub trait ConfigHooks {
+pub trait ComplexConfigHook {
     async fn entires(&self, parent: &Vec<&str>) -> Result<Vec<&str>>;
     async fn lookup(&self, parent: &Vec<&str>, name: &str) -> Result<(EntryType, u64)>;
     async fn lookup_path(&self, path: &Vec<&str>) -> Result<(EntryType, u64)>;
@@ -27,4 +33,12 @@ pub trait ConfigHooks {
     async fn fetch(&mut self, data_node: &Vec<&str>) -> Result<Vec<u8>>;
     async fn size(&mut self, data_node: &Vec<&str>) -> Result<u64>;
     async fn update(&mut self, data_node: &Vec<&str>, data: Vec<u8>) -> Result<()>;
+}
+
+pub type BasicConfiguration = Arc<RwLock<dyn BasicConfigHook + Send + Sync>>;
+#[async_trait]
+pub trait BasicConfigHook {
+    async fn fetch(&mut self) -> Result<Vec<u8>>;
+    async fn size(&mut self) -> Result<u64>;
+    async fn update(&mut self, data: Vec<u8>) -> Result<()>;
 }

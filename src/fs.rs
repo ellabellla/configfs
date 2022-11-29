@@ -7,7 +7,7 @@ use tokio::{sync::RwLock, task::JoinHandle};
 use std::{vec::IntoIter, ffi::{OsStr, OsString}, time::{Duration, UNIX_EPOCH}, sync::Arc, collections::HashMap, io};
 use rand::Rng;
 
-use crate::{config::{EntryType}, mount::{FSMount, PathPair}};
+use crate::{config::{EntryType, Configuration}, mount::{FSMount, PathPair}};
 
 const TTL: Duration = Duration::from_secs(1);
 
@@ -126,7 +126,13 @@ impl PathFilesystem for FS {
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
         let (config, path) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
-        let (entry_type, size) = config.read().await.lookup(&path, &name.to_string_lossy().to_string()).await?;
+        let (entry_type, size) = match config{
+            Configuration::Basic(basic) => (EntryType::Data, basic.write().await.size().await?),
+            Configuration::Complex(complex) => complex.read()
+                .await
+                .lookup(&path, &name.to_string_lossy().to_string())
+                .await?,
+        };
         Ok(ReplyEntry{
             ttl: TTL,
             attr: create_attr(&entry_type, size)
@@ -155,7 +161,13 @@ impl PathFilesystem for FS {
             let mount = self.mount.read().await;
             let parent = path.ok_or_else(|| Errno::new_not_exist())?.to_string_lossy().to_string();
             let (config, path) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
-            let (entry_type, size) = config.read().await.lookup_path(&path).await?;
+            let (entry_type, size) = match config{
+                Configuration::Basic(basic) => (EntryType::Data, basic.write().await.size().await?),
+                Configuration::Complex(complex) => complex.read()
+                    .await
+                    .lookup_path(&path)
+                    .await?,
+            };
             Ok(
                 ReplyAttr{
                     ttl: TTL,
@@ -185,7 +197,13 @@ impl PathFilesystem for FS {
             let mount = self.mount.read().await;
             let parent = path.ok_or_else(|| Errno::new_not_exist())?.to_string_lossy().to_string();
             let (config, path) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
-            let (entry_type, size) = config.read().await.lookup_path(&path).await?;
+            let (entry_type, size) = match config{
+                Configuration::Basic(basic) => (EntryType::Data, basic.write().await.size().await?),
+                Configuration::Complex(complex) => complex.read()
+                    .await
+                    .lookup_path(&path)
+                    .await?,
+            };
             Ok(
                 ReplyAttr{
                     ttl: TTL,
@@ -206,6 +224,10 @@ impl PathFilesystem for FS {
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
         let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
+
+        let Configuration::Complex(config) = config else {
+            return Err(Errno::new_is_not_dir())
+        };
         let mut config = config.write().await;
         config.mk_obj(&parent, &name.to_string_lossy().to_string()).await?;
         Ok(
@@ -220,6 +242,10 @@ impl PathFilesystem for FS {
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
         let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
+
+        let Configuration::Complex(config) = config else {
+            return Err(libc::EACCES.into())
+        };
         let mut config = config.write().await;
         config.rm(&parent, &name.to_string_lossy().to_string()).await?;
         Ok(())
@@ -229,6 +255,10 @@ impl PathFilesystem for FS {
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
         let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
+
+        let Configuration::Complex(config) = config else {
+            return Err(Errno::new_is_not_dir())
+        };
         let mut config = config.write().await;
         config.rm(&parent, &name.to_string_lossy().to_string()).await?;
         Ok(())
@@ -253,6 +283,9 @@ impl PathFilesystem for FS {
 
         if old_parent == new_parent {
             let (config, old_parent) = mount.resolve(&old_parent).ok_or_else(|| Errno::new_not_exist())?;
+            let Configuration::Complex(config) = config else {
+                return Err(Errno::new_is_not_dir())
+            };
             let mut config = config.write().await;
 
             config.rn(&old_parent, &old_name, &new_name).await?;
@@ -261,10 +294,21 @@ impl PathFilesystem for FS {
 
             match configs {
                 PathPair::Single(config) => {
+                    let Configuration::Complex(config) = config else {
+                        return Err(Errno::new_is_not_dir())
+                    };
+                    
                     let mut config = config.write().await;
                     config.mv(&old_parent, &new_parent, &old_name, &new_name).await?;
                 },
                 PathPair::Pair(config_a, config_b) => {
+                    let Configuration::Complex(config_a) = config_a else {
+                        return Err(Errno::new_is_not_dir())
+                    };
+                    let Configuration::Complex(config_b) = config_b else {
+                        return Err(Errno::new_is_not_dir())
+                    };
+            
                     if Arc::ptr_eq(&config_a, &config_b) {
                         let mut config = config_a.write().await;
                         config.mv(&old_parent, &new_parent, &old_name, &new_name).await?;
@@ -296,14 +340,19 @@ impl PathFilesystem for FS {
         let mount = self.mount.read().await;
         let path_str = path.to_string_lossy().to_string();
         let (config, path) = mount.resolve(&path_str).ok_or_else(|| Errno::new_not_exist())?;
-        let mut config = config.write().await;
 
-        let (entry_type, _) = config.lookup_path(&path).await?; 
-        if !matches!(entry_type, EntryType::Data) {
-            return Err(Errno::new_is_dir())
-        }
-
-        let data = config.fetch(&path).await?;
+        let data = match config{
+            Configuration::Basic(basic) => basic.write().await.fetch().await?,
+            Configuration::Complex(complex) =>  {
+                let mut config = complex.write().await;
+                let (entry_type, _) = config.lookup_path(&path).await?; 
+                if !matches!(entry_type, EntryType::Data) {
+                    return Err(Errno::new_is_dir())
+                }
+                config.fetch(&path).await?
+            },
+        };
+        
         let fh = self.open(&path_str, data).await;
         Ok(ReplyOpen { 
             fh, 
@@ -391,9 +440,12 @@ impl PathFilesystem for FS {
 
         let mount = self.mount.read().await;
         let (config, path) = mount.resolve(&path).ok_or_else(|| Errno::new_not_exist())?;
-        let mut config = config.write().await;
-        config.update(&path, data).await?;
 
+        match config{
+            Configuration::Basic(basic) => basic.write().await.update(data).await?,
+            Configuration::Complex(complex) => complex.write().await.
+                update(&path, data).await?,
+        }
         Ok(())
     }
 
@@ -433,6 +485,9 @@ impl PathFilesystem for FS {
         let parent = parent.to_string_lossy().to_string();
         let file_path = format!("{}/{}", parent, name.to_string_lossy().to_string());
         let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
+        let Configuration::Complex(config) = config else {
+            return Err(Errno::new_is_not_dir())
+        };
         let mut config = config.write().await;
 
         config.mk_data(&parent, &name.to_string_lossy().to_string()).await?;
@@ -474,6 +529,9 @@ impl PathFilesystem for FS {
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
         let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
+        let Configuration::Complex(config) = config else {
+            return Err(Errno::new_is_not_dir())
+        };
         let config = config.read().await;
 
         let entries = config.entires(&parent).await?;
@@ -531,5 +589,13 @@ impl PathFilesystem for FS {
         _whence: u32,
     ) -> Result<ReplyLSeek> {
         Ok(ReplyLSeek { offset })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test] 
+    async fn test() {
+
     }
 }
