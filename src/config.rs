@@ -24,7 +24,6 @@ pub trait ConfigHooks {
     async fn rm(&mut self, parent: &Vec<&str>, name: &str) -> Result<()>;
     async fn rn(&mut self, parent: &Vec<&str>, name: &str, new_name: &str) -> Result<()>;
 
-    async fn lock(&mut self, data_node: &Vec<&str>) -> Result<()>;
     async fn fetch(&mut self, data_node: &Vec<&str>) -> Result<Vec<u8>>;
     async fn size(&mut self, data_node: &Vec<&str>) -> Result<u64>;
     async fn update(&mut self, data_node: &Vec<&str>, data: Vec<u8>) -> Result<()>;
