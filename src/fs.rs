@@ -205,8 +205,9 @@ impl PathFilesystem for FS {
     ) -> Result<ReplyEntry> {
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
-        let (config, path) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
+        let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
         let mut config = config.write().await;
+        config.mk_obj(&parent, &name.to_string_lossy().to_string()).await?;
         Ok(
             ReplyEntry{
                 ttl: TTL,
