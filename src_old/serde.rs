@@ -93,7 +93,7 @@ mod tests {
 
     use tempfile::{NamedTempFile};
 
-    use crate::{EmptyNodeData, EmptyInoLookup};
+    use crate::{basic::{EmptyNodeData, EmptyInoLookup}};
 
     use super::*;
 

@@ -4,14 +4,14 @@ use fuse3::{Errno, Result};
 use rand::Rng;
 use tokio::sync::RwLock;
 
-use crate::{Node, NodeData, serde::{ConfigurationInfo, FromInfo, InoDecoder}, NodeObject, InoLookup, EmptyInoLookup};
+use crate::{Node, NodeData, serde::{ConfigurationInfo, FromInfo, InoDecoder}, NodeObject, InoLookup, basic::EmptyInoLookup};
 
 pub struct Configuration {
     pub(crate) nodes: HashMap<u64, Node>,
     pub(crate) ino_lookup: InoLookup,
 }
 
-const ROOT: u64 = 1;
+pub const ROOT: u64 = 1;
 
 impl Configuration {
     pub fn new(ino_lookup: InoLookup) -> Arc<RwLock<Configuration>> {
@@ -34,12 +34,23 @@ impl Configuration {
 
     async fn new_ino(&mut self, node: Node) -> u64 {
         let mut ino = rand::thread_rng().gen();
-        while self.nodes.contains_key(&ino) || self.ino_lookup.lookup(ino).await {
+        let ino_lookup = self.ino_lookup.read().await;
+        while self.nodes.contains_key(&ino) || ino_lookup.lookup(ino).await {
             ino = rand::thread_rng().gen();
         }
 
         self.nodes.insert(ino, node);
         ino
+    }
+
+    async fn add_ino(&mut self, ino: u64, node: Node) -> Option<u64> {
+        let ino_lookup = self.ino_lookup.read().await;
+        if self.nodes.contains_key(&ino) || ino_lookup.lookup(ino).await {
+            None
+        } else {
+            self.nodes.insert(ino, node);
+            Some(ino)
+        }
     }
 
     pub fn root(&self) -> u64 {
@@ -68,7 +79,7 @@ impl Configuration {
                             return Err(Errno::new_not_exist())
                         },
                         Node::Object(obj) => {
-                            let (ino, _) = obj.lock().await.find(
+                            let (ino, _) = obj.read().await.find(
                                 *ino, 
                                 nodes.iter()
                                     .map(|s| s.to_string()).collect()
@@ -90,18 +101,18 @@ impl Configuration {
     }
 
     pub async fn get<'a>(&'a self, ino: u64) -> Result<&'a Node> {
-        let re_ino = self.ino_lookup.redirect(ino).await;
+        let re_ino = self.ino_lookup.read().await.redirect(ino).await;
         if re_ino == ino {
             self.nodes.get(&ino).ok_or_else(|| Errno::new_not_exist())
         } else {
-            let Some(node) = self.nodes.get(&ino) else {
+            let Some(node) = self.nodes.get(&re_ino) else {
                 return Err(Errno::new_not_exist())
             };
             let Node::Object(obj) = node else {
                 return Err(Errno::new_not_exist())
             };
 
-            if !obj.lock().await.contains(re_ino).await? {
+            if !obj.read().await.contains_ino(ino).await {
                 return Err(Errno::new_not_exist())
             }
 
@@ -112,7 +123,7 @@ impl Configuration {
     pub async fn fetch_data<'a>(&'a self, ino: u64) -> Result<Vec<u8>> {
         match self.get(ino).await? {
             Node::Data(data) => Ok(data.lock().await.fetch(ino).await?),
-            Node::Object(object) => Ok(object.lock().await.fetch(ino).await?),
+            Node::Object(object) => Ok(object.write().await.fetch(ino).await?),
             _ => Err(Errno::new_is_dir()),
         }
     }
@@ -120,7 +131,7 @@ impl Configuration {
     pub async fn update_data(&self, ino: u64, data: Vec<u8>) -> Result<()> {
         match self.get(ino).await? {
             Node::Data(node_data) => Ok(node_data.lock().await.update(ino, data).await?),
-            Node::Object(object) => Ok(object.lock().await.update(ino, data).await?),
+            Node::Object(object) => Ok(object.write().await.update(ino, data).await?),
             _ => Err(Errno::new_is_dir()),
         }
     }
@@ -130,8 +141,8 @@ impl Configuration {
         match group {
             Node::Data(_) => Err(Errno::new_not_exist()),
             Node::Group(group, _) => Ok(group.contains_key(name)),
-            Node::Object(obj) => obj.lock().await
-                .contains(ino).await,
+            Node::Object(obj) => Ok(obj.read().await
+                .contains(ino, name.to_string()).await),
         }
     }
 
@@ -141,7 +152,7 @@ impl Configuration {
             Node::Group(group, _) => group.get(name)
                 .map(|i| i.clone())
                 .ok_or_else(|| Errno::new_not_exist()),
-            Node::Object(obj) => obj.lock().await
+            Node::Object(obj) => obj.read().await
                 .lookup(ino, name.to_string()).await
                 .map(|(i,_)| i),
             _ =>  Err(Errno::new_not_exist()),
@@ -168,7 +179,7 @@ impl Configuration {
                 return Err(Errno::new_is_not_dir())
             };
 
-            obj.lock().await.mv(parent, new_parent, name.to_string(), new_name.to_string()).await
+            obj.write().await.mv(parent, new_parent, name.to_string(), new_name.to_string()).await
         }
     }
 
@@ -187,7 +198,7 @@ impl Configuration {
                 return Err(Errno::new_is_not_dir())
             };
 
-            obj.lock().await.rn(parent, name.to_string(), new_name.to_string()).await
+            obj.write().await.rn(parent, name.to_string(), new_name.to_string()).await
         }
     }
 
@@ -226,12 +237,12 @@ impl Configuration {
                 return Err(Errno::new_is_not_dir())
             };
 
-            obj.lock().await.mk_data(parent, name.to_string()).await
+            obj.write().await.mk_data(parent, name.to_string()).await
         }
     }
 
-    pub async fn create_object(&mut self, parent: u64, name: &str, node_object: NodeObject) -> Result<u64> {
-        let ino = self.new_ino(Node::Object(node_object)).await;
+    pub async fn create_object(&mut self, parent: u64, name: &str, ino: u64, node_object: NodeObject) -> Result<u64> {
+        self.add_ino(ino, Node::Object(node_object)).await.ok_or_else(|| Errno::new_exist())?;
         if let Some(Node::Group(group, _)) = self.nodes.get_mut(&parent) {
             let name = name.to_string();
             if let None = group.get(&name) {
@@ -248,7 +259,7 @@ impl Configuration {
                 return Err(Errno::new_is_not_dir())
             };
 
-            obj.lock().await.mk_obj(parent, name.to_string()).await
+            obj.write().await.mk_obj(parent, name.to_string()).await
         }
     }
 
@@ -263,7 +274,7 @@ impl Configuration {
                     Err(Errno::new_not_exist())
                 }
             },
-            Node::Object(obj) => obj.lock().await
+            Node::Object(obj) => obj.read().await
                 .lookup(parent, name.to_string()).await
                 .map(|(i,_)| i),
             _ => Err(Errno::new_is_not_dir())
@@ -282,7 +293,7 @@ impl Configuration {
                 return Err(Errno::new_is_not_dir())
             };
 
-            obj.lock().await.rm(parent, name.to_string()).await
+            obj.write().await.rm(parent, name.to_string()).await
         }
     }
 }
@@ -290,7 +301,7 @@ impl Configuration {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Configuration, Node, EmptyNodeData, CheckNodeData, EmptyInoLookup};
+    use crate::{Configuration, Node, basic::{EmptyNodeData, CheckNodeData, EmptyInoLookup}};
 
     #[tokio::test]
     async fn root() {
