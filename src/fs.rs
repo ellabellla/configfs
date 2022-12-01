@@ -22,8 +22,8 @@ pub(crate) fn split_path<'a>(path: &'a str) -> Vec<&'a str> {
 
 fn create_attr(entry_type: &EntryType, size: u64) -> FileAttr {
     match entry_type {
-        EntryType::Object => create_file_attr(size),
-        EntryType::Data => create_dir_attr(size as u32),
+        EntryType::Data => create_file_attr(size),
+        EntryType::Object => create_dir_attr(size as u32),
     }
 }
 
@@ -88,7 +88,6 @@ impl FS {
             let res = handle.await;
             res
         });
-        
         Ok(join)
     }
 
@@ -123,14 +122,24 @@ impl PathFilesystem for FS {
     async fn destroy(&self, _req: Request) {}
 
     async fn lookup(&self, _req: Request, parent: &OsStr, name: &OsStr) -> Result<ReplyEntry> {
+        println!("LOOKUP {:?} {:?}", parent, name);
         let mount = self.mount.read().await;
-        let parent = parent.to_string_lossy().to_string();
-        let (config, path) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
+        let parent = format!("{}/{}", parent.to_string_lossy().to_string(), name.to_string_lossy().to_string());
+        let Some((config, path)) = mount.resolve(&parent) else {
+            let Some(entires) = mount.entries(&parent) else {
+                return Err(Errno::new_not_exist())
+            };
+
+            return Ok(ReplyEntry{
+                ttl: TTL,
+                attr: create_attr(&EntryType::Object, entires.len() as u64)
+            })
+        };
         let (entry_type, size) = match config{
             Configuration::Basic(basic) => (EntryType::Data, basic.write().await.size().await?),
             Configuration::Complex(complex) => complex.read()
                 .await
-                .lookup(&path, &name.to_string_lossy().to_string())
+                .lookup_path(&path)
                 .await?,
         };
         Ok(ReplyEntry{
@@ -148,6 +157,7 @@ impl PathFilesystem for FS {
         fh: Option<u64>,
         _flags: u32,
     ) -> Result<ReplyAttr> {
+        println!("GETATTR {:?}, {:?}", path, fh);
         if let Some(fh) = fh  {
             let open = self.open.read().await;
             let (_, data) = open.get(&fh).ok_or_else(|| Errno::new_not_exist())?;
@@ -160,7 +170,16 @@ impl PathFilesystem for FS {
         }  else {
             let mount = self.mount.read().await;
             let parent = path.ok_or_else(|| Errno::new_not_exist())?.to_string_lossy().to_string();
-            let (config, path) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
+            let Some((config, path)) = mount.resolve(&parent) else {
+                let Some(entires) = mount.entries(&parent) else {
+                    return Err(Errno::new_not_exist())
+                };
+    
+                return Ok(ReplyAttr{
+                    ttl: TTL,
+                    attr: create_attr(&EntryType::Object, entires.len() as u64)
+                })
+            };
             let (entry_type, size) = match config{
                 Configuration::Basic(basic) => (EntryType::Data, basic.write().await.size().await?),
                 Configuration::Complex(complex) => complex.read()
@@ -184,6 +203,7 @@ impl PathFilesystem for FS {
         fh: Option<u64>,
         _set_attr: SetAttr,
     ) -> Result<ReplyAttr> {
+        println!("SETATTR");
         if let Some(fh) = fh  {
             let open = self.open.read().await;
             let (_, data) = open.get(&fh).ok_or_else(|| Errno::new_not_exist())?;
@@ -196,7 +216,16 @@ impl PathFilesystem for FS {
         }  else {
             let mount = self.mount.read().await;
             let parent = path.ok_or_else(|| Errno::new_not_exist())?.to_string_lossy().to_string();
-            let (config, path) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
+            let Some((config, path)) = mount.resolve(&parent) else {
+                let Some(entires) = mount.entries(&parent) else {
+                    return Err(Errno::new_not_exist())
+                };
+    
+                return Ok(ReplyAttr{
+                    ttl: TTL,
+                    attr: create_attr(&EntryType::Object, entires.len() as u64)
+                })
+            };
             let (entry_type, size) = match config{
                 Configuration::Basic(basic) => (EntryType::Data, basic.write().await.size().await?),
                 Configuration::Complex(complex) => complex.read()
@@ -221,9 +250,10 @@ impl PathFilesystem for FS {
         _mode: u32,
         _umask: u32,
     ) -> Result<ReplyEntry> {
+        println!("MKDIR");
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
-        let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
+        let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::from(libc::EACCES))?;
 
         let Configuration::Complex(config) = config else {
             return Err(Errno::new_is_not_dir())
@@ -239,9 +269,10 @@ impl PathFilesystem for FS {
     }
 
     async fn unlink(&self, _req: Request, parent: &OsStr, name: &OsStr) -> Result<()> {
+        println!("UNLINK");
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
-        let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
+        let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::from(libc::EACCES))?;
 
         let Configuration::Complex(config) = config else {
             return Err(libc::EACCES.into())
@@ -252,9 +283,10 @@ impl PathFilesystem for FS {
     }
 
     async fn rmdir(&self, _req: Request, parent: &OsStr, name: &OsStr) -> Result<()> {
+        println!("RMDIR");
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
-        let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
+        let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::from(libc::EACCES))?;
 
         let Configuration::Complex(config) = config else {
             return Err(Errno::new_is_not_dir())
@@ -272,6 +304,7 @@ impl PathFilesystem for FS {
         parent: &OsStr,
         name: &OsStr,
     ) -> Result<()> {
+        println!("RENAME");
         let mount = self.mount.read().await;
         
         let old_parent = origin_parent.to_string_lossy().to_string();
@@ -282,7 +315,7 @@ impl PathFilesystem for FS {
 
 
         if old_parent == new_parent {
-            let (config, old_parent) = mount.resolve(&old_parent).ok_or_else(|| Errno::new_not_exist())?;
+            let (config, old_parent) = mount.resolve(&old_parent).ok_or_else(|| Errno::from(libc::EACCES))?;
             let Configuration::Complex(config) = config else {
                 return Err(Errno::new_is_not_dir())
             };
@@ -337,9 +370,10 @@ impl PathFilesystem for FS {
     }
 
     async fn open(&self, _req: Request, path: &OsStr, _flags: u32) -> Result<ReplyOpen> {
+        println!("OPEN");
         let mount = self.mount.read().await;
         let path_str = path.to_string_lossy().to_string();
-        let (config, path) = mount.resolve(&path_str).ok_or_else(|| Errno::new_not_exist())?;
+        let (config, path) = mount.resolve(&path_str).ok_or_else(|| Errno::from(libc::EACCES))?;
 
         let data = match config{
             Configuration::Basic(basic) => basic.write().await.fetch().await?,
@@ -368,6 +402,7 @@ impl PathFilesystem for FS {
         offset: u64,
         size: u32,
     ) -> Result<ReplyData> {
+        println!("READ");
         let open = self.open.read().await;
 
         let Some((_, data)) = open.get(&fh) else {
@@ -402,6 +437,7 @@ impl PathFilesystem for FS {
         data: &[u8],
         _flags: u32,
     ) -> Result<ReplyWrite> {
+        println!("WRITE");
         let mut open = self.open.write().await;
 
         let Some((_, file_data)) = open.get_mut(&fh) else {
@@ -434,12 +470,13 @@ impl PathFilesystem for FS {
         _lock_owner: u64,
         _flush: bool,
     ) -> Result<()> {
+        println!("RELEASE");
         let Some((path, data)) = self.release(fh).await else {
             return Err(Errno::new_not_exist())
         };
 
         let mount = self.mount.read().await;
-        let (config, path) = mount.resolve(&path).ok_or_else(|| Errno::new_not_exist())?;
+        let (config, path) = mount.resolve(&path).ok_or_else(|| Errno::from(libc::EACCES))?;
 
         match config{
             Configuration::Basic(basic) => basic.write().await.update(data).await?,
@@ -481,10 +518,11 @@ impl PathFilesystem for FS {
         _mode: u32,
         _flags: u32,
     ) -> Result<ReplyCreated> {
+        println!("CREATE");
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
         let file_path = format!("{}/{}", parent, name.to_string_lossy().to_string());
-        let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
+        let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::from(libc::EACCES))?;
         let Configuration::Complex(config) = config else {
             return Err(Errno::new_is_not_dir())
         };
@@ -526,28 +564,43 @@ impl PathFilesystem for FS {
         offset: u64,
         _lock_owner: u64,
     ) -> Result<ReplyDirectoryPlus<Self::DirEntryPlusStream>> {
+        println!("READDIR");
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
-        let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::new_not_exist())?;
-        let Configuration::Complex(config) = config else {
-            return Err(Errno::new_is_not_dir())
-        };
-        let config = config.read().await;
+        let entries = if let Some((config, parent)) = mount.resolve(&parent) {
+            let Configuration::Complex(config) = config else {
+                return Err(Errno::new_is_not_dir())
+            };
+            let config = config.read().await;
+    
+            let entry_names = config.entires(&parent).await?;
+            let mut entries = Vec::with_capacity(entry_names.len());
 
-        let entries = config.entires(&parent).await?;
+            for name in entry_names.into_iter() {
+                if let Ok((entry_type, size)) = config.lookup(&parent, &name).await {
+                    entries.push((name, entry_type, size));
+                }
+            }
+            entries
+        } else {
+            let Some(entries) = mount.entries(&parent) else {
+                return Err(Errno::new_not_exist())
+            };
+            entries.into_iter().map(|(n, t)| (n, t, 2)).collect()
+        };
+       
         let mut children = Vec::with_capacity(2 + entries.len());
 
         children.extend(vec![
                 (FileType::Directory, OsString::from("."), create_dir_attr(entries.len( )as u32), 1),
                 (FileType::Directory, OsString::from(".."), create_dir_attr(2), 2),
         ]);
-        
-        for (i, name) in entries.iter().enumerate() {
-            if let Ok((entry_type, size)) = config.lookup(&parent, name).await {
-                let attr = create_attr(&entry_type, size);
+
+        for (i, (name, entry_type, size)) in entries.iter().enumerate() {
+                let attr = create_attr(&entry_type, *size);
                 children.push((attr.kind, OsString::from(name), attr, i as i64 + 3));
-            }
         }
+        
 
         let children = children.into_iter()
         .map(|(kind, name, attr, offset)| DirectoryEntryPlus {
@@ -561,7 +614,7 @@ impl PathFilesystem for FS {
             .skip(offset as _)
             .map(Ok)
             .collect::<Vec<_>>();
-        drop(config);
+
         Ok(ReplyDirectoryPlus {
             entries: stream::iter(children),
         })
@@ -594,8 +647,8 @@ impl PathFilesystem for FS {
 
 #[cfg(test)]
 mod tests {
+
     #[tokio::test] 
     async fn test() {
-
     }
 }
