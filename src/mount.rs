@@ -1,8 +1,8 @@
-use std::{sync::Arc, iter};
+use std::{sync::Arc, iter, collections::HashSet};
 
 use tokio::sync::RwLock;
 
-use crate::{config::Configuration, fs::split_path};
+use crate::{config::{Configuration, EntryType}, fs::split_path};
 
 
 pub type FSMount = Arc<RwLock<Mount>>;
@@ -29,7 +29,11 @@ impl Mount {
         mount.iter().zip(path.iter()).all(|(a,b)| a==b)
     }
 
-    fn starts_with<'a>(mount: &Vec<String>, path: &Vec<&'a str>) -> Option<Vec<&'a str>> {
+    fn starts_with<A, B>(mount: &Vec<A>, path: &Vec<B>) -> Option<Vec<B>> 
+    where
+        A: Default,
+        B: std::cmp::PartialEq<A> + Clone + Copy
+    {
         if mount.len() > path.len() {
             return None
         }
@@ -38,10 +42,10 @@ impl Mount {
         }
 
         let mut mount_iter =  mount.iter();
-        let empty_string = "".to_string();
-        let end: Vec<&str> = path.iter()
-            .zip(iter::repeat_with(|| mount_iter.next().unwrap_or(&empty_string)))
-            .skip_while(|(a,b)| a == b)
+        let empty = A::default();
+        let end: Vec<B> = path.iter()
+            .zip(iter::repeat_with(|| mount_iter.next().unwrap_or(&empty)))
+            .skip_while(|(a,b)| **a == **b)
             .map(|(a, _)| *a)
             .collect();
         
@@ -148,6 +152,42 @@ impl Mount {
             None
         }
     }
+
+    pub fn entries(&self, path: &str) -> Option<Vec<(String, EntryType)>> {
+        let path= split_path(path);
+        let mut entries = HashSet::new();
+        for (m_path, config) in self.mounts.iter() {
+            if let Some(end) = Mount::starts_with(&path, &m_path.iter().map(|s| s.as_ref()).collect::<Vec<&str>>()) {
+                let Some(entry) = end.first() else {
+                    continue;
+                };
+
+                let entry_type = if end.len() == 1 {
+                    EntryType::from(config)
+                } else {
+                    EntryType::Object
+                };
+
+                entries.insert((entry.to_string(), entry_type));
+            }
+        }
+        if entries.is_empty() {
+            None
+        } else {
+            Some(entries.into_iter().collect())
+        }
+    }
+
+    pub fn contains(&self, path: & str) -> bool {
+        let path= split_path(path);
+        for (m_path, _) in self.mounts.iter() {
+            if let Some(_) = Mount::starts_with(&path, &m_path.iter().map(|s| s.as_ref()).collect::<Vec<&str>>()) {
+                return true
+            }
+        }
+
+        false
+    }
 }
 
 
@@ -169,7 +209,7 @@ mod tests {
 
     #[async_trait]
     impl ComplexConfigHook for EmptyConfig {
-        async fn entires(&self, _parent: &Vec<&str>) -> Result<Vec<&str>> {
+        async fn entires(&self, _parent: &Vec<&str>) -> Result<Vec<String>> {
             Err(Errno::new_not_exist())
         }
         async fn lookup(&self, _parent: &Vec<&str>, _name: &str) -> Result<(EntryType, u64)>{
@@ -221,6 +261,12 @@ mod tests {
         mount.mount("/b/b", EmptyConfig::new());
         mount.mount("/", EmptyConfig::new());
 
+        let sort = |mut v: Vec<(String, EntryType)>| { v.sort(); v };
+
+        assert_eq!(sort(mount.entries("/").unwrap()), vec![("a".to_string(), EntryType::Object), ("b".to_string(), EntryType::Object)]);
+        assert!(mount.entries("/a").is_none());
+        assert_eq!(sort(mount.entries("/b").unwrap()), vec![("a".to_string(), EntryType::Object), ("b".to_string(), EntryType::Object)]);
+
         assert_eq!(mount.resolve("/a").unwrap().1.join("/"), "");
         assert_eq!(mount.resolve("/a/file").unwrap().1.join("/"), "file");
         assert_eq!(mount.resolve("/a/dir/file").unwrap().1.join("/"), "dir/file");
@@ -259,8 +305,14 @@ mod tests {
         assert_eq!(mount.resolve("/b/b").unwrap().1.join("/"), "");
         assert_eq!(mount.resolve("/b/a").unwrap().1.join("/"), "b/a");
 
+        assert_eq!(mount.entries("/").unwrap(), vec![("a".to_string(), EntryType::Object), ("b".to_string(), EntryType::Object)]);
+        
         mount.unmount("/");
         assert!(mount.resolve("/b/a").is_none());
 
+        mount.unmount("/b/b");
+        assert!(mount.resolve("/b/b").is_none());
+
+        assert_eq!(mount.entries("/").unwrap(), vec![("a".to_string(), EntryType::Object)]);
     }
 }
