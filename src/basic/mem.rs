@@ -27,6 +27,7 @@ impl MemNode {
         matches!(self, MemNode::File(_))
     }
 
+    #[allow(dead_code)]
     fn is_dir(&self) -> bool {
         matches!(self, MemNode::Dir(_))
     }
