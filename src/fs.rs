@@ -649,7 +649,7 @@ impl PathFilesystem for FS {
 mod tests {
     use std::{fs::{self}, io::{ErrorKind, Write}};
 
-    use crate::{mount::Mount, config::{MemFile, MemDir}};
+    use crate::{mount::Mount, basic::mem::{MemDir, MemFile}};
 
     use super::FS;
 
