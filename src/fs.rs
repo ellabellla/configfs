@@ -647,8 +647,76 @@ impl PathFilesystem for FS {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs::{self}, io::{ErrorKind, Write}};
+
+    use crate::{mount::Mount, config::{MemFile, MemDir}};
+
+    use super::FS;
 
     #[tokio::test] 
     async fn test() {
+        fs::create_dir_all("tmp").unwrap();
+        let tmp =tempfile::TempDir::new_in("tmp").unwrap();
+        println!("{:?}", tmp.path());
+        let mount = Mount::new();
+        {
+            let mut mnt = mount.write().await;
+            mnt.mount("/dir", MemDir::new());
+            mnt.mount("/file", MemFile::new());
+        }
+        let fs = FS::mount("test", tmp.path().to_str().unwrap(), mount);
+        let mount_handle = fs.await.unwrap();
+
+        let sort = |mut v: Vec<_>| {v.sort(); v};
+
+        tokio::task::spawn_blocking(move || {
+            let path = tmp.path();
+            assert_eq!(fs::create_dir(&path.join("tmp")).unwrap_err().kind(), ErrorKind::PermissionDenied);
+
+            let dir = path.join("dir");
+            assert_eq!(
+                sort(fs::read_dir(&dir).unwrap()
+                    .into_iter()
+                    .map(|d| d.unwrap().path().to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
+                ),
+                Vec::<&str>::new()
+            );
+    
+            let dir2 = dir.join("dir");
+            fs::create_dir(&dir2).unwrap();
+            assert!(dir2.exists());        
+    
+            let file = dir.join("file");
+            fs::File::create(&file).unwrap().write("hello".as_bytes()).unwrap();
+            assert!(file.exists());   
+            assert_eq!(fs::read_to_string(&file).unwrap(), "hello");        
+    
+            let file_new_name = dir.join("file+");
+            fs::rename(&file, &file_new_name).unwrap();
+            assert!(!file.exists());   
+            assert!(file_new_name.exists());   
+            let file = file_new_name;
+    
+            let file_path = dir2.join("file");
+            fs::rename(&file, &file_path).unwrap();
+            assert!(!file.exists());   
+            assert!(file_path.exists());   
+            let file = file_path;
+    
+            fs::remove_file(&file).unwrap();
+            assert!(!file.exists());
+    
+            fs::remove_dir(&dir2).unwrap();
+            assert!(!dir2.exists());
+            
+            let file = path.join("file");
+            fs::File::create(&file).unwrap().write("hello".as_bytes()).unwrap();
+            assert!(file.exists());   
+            assert_eq!(fs::read_to_string(&file).unwrap(), "hello"); 
+        }).await.unwrap();
+        
+
+        mount_handle.await.unwrap().unwrap();
     }
 }
