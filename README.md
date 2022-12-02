@@ -4,6 +4,8 @@ ConfigFS is a library for creating filesystem's that allow users to view and mod
 
 ConfigFS relies on fuse3. It can be installed via your favorite package manager.
 
+You can view the docs [here](https://ellabellla.github.io/configfs/configfs/)
+
 ## How Does It Work?
 ```rust
 struct FavNumberConfig {
