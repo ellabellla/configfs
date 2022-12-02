@@ -2,6 +2,8 @@
 
 ConfigFS is a library for creating filesystem's that allow users to view and modify structured data and settings. It is inspired by another filesystem of the same name, ConfigFS, a ram based filesystem on linux that allows users to configure kernel objects.
 
+ConfigFS relies on fuse3. It can be installed via your favorite package manager.
+
 ## How Does It Work?
 ```rust
 struct FavNumberConfig {
@@ -21,7 +23,7 @@ impl BasicConfigHook for FavNumberConfig {
     async fn fetch(&mut self) -> Result<Vec<u8>> {
         Ok(format!("{}", self.fav_number).as_bytes().to_vec())
     }
-    
+
     async fn size(&mut self) -> Result<u64> {
         Ok(format!("{}", self.fav_number).as_bytes().len() as u64)
     }
