@@ -5,6 +5,8 @@ use tokio::{sync::RwLock, task::JoinHandle, time};
 use crate::{config::{Configuration, EntryType}, fs::split_path};
 
 
+/// # FSMount Type
+/// Places the Mount interface behind a read write lock to help prevent deadlocking and race conditions.
 pub type FSMount = Arc<RwLock<Mount>>;
 
 pub(crate) enum PathPair {

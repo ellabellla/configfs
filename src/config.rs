@@ -78,6 +78,30 @@ pub type ComplexConfiguration = Arc<RwLock<dyn ComplexConfigHook + Send + Sync>>
 #[async_trait]
 /// # Complex Config Trait
 /// A complex configuration mus implement this trait
+/// 
+/// Use the [`crate::async_trait`] proc_macro to define the trait.
+/// ```
+/// #[async_trait]
+/// pub trait ComplexConfigHook {
+///     async fn entires(&self, parent: &Vec<&str>) -> Result<Vec<String>>;
+///     async fn lookup(&self, parent: &Vec<&str>, name: &str) -> Result<(EntryType, u64)>;
+///     async fn lookup_path(&self, path: &Vec<&str>) -> Result<(EntryType, u64)>;
+///     async fn contains(&self, parent: &Vec<&str>, name: &str) -> bool;
+/// 
+///     async fn mk_data(&mut self, parent: &Vec<&str>, name: &str) -> Result<()>;
+///     async fn mk_obj(&mut self, parent: &Vec<&str>, name: &str) -> Result<()>;
+///     async fn mv(&mut self, parent: &Vec<&str>, new_parent: &Vec<&str>, name: &str, new_name: &str) -> Result<()>;
+///     async fn rm(&mut self, parent: &Vec<&str>, name: &str) -> Result<()>;
+///     async fn rn(&mut self, parent: &Vec<&str>, name: &str, new_name: &str) -> Result<()>;
+/// 
+///     async fn fetch(&mut self, data_node: &Vec<&str>) -> Result<Vec<u8>>;
+///     async fn size(&mut self, data_node: &Vec<&str>) -> Result<u64>;
+///     async fn update(&mut self, data_node: &Vec<&str>, data: Vec<u8>) -> Result<()>;
+/// 
+///     async fn tick(&mut self);
+///     fn tick_interval(&self) -> Duration;
+/// }
+/// ```
 pub trait ComplexConfigHook {
     /// Return the entires inside a Data Entry at the given path.
     async fn entires(&self, parent: &Vec<&str>) -> Result<Vec<String>>;
@@ -112,10 +136,26 @@ pub trait ComplexConfigHook {
     fn tick_interval(&self) -> Duration;
 }
 
+/// # Basic Configuration Type
+/// Basic file like interface. Places the config interface behind a read write lock to help prevent deadlocking and race conditions.
 pub type BasicConfiguration = Arc<RwLock<dyn BasicConfigHook + Send + Sync>>;
+
 #[async_trait]
 /// # Basic Config Trait
-/// A basic configuration mus implement this trait
+/// A basic configuration must implement this trait
+/// 
+/// Use the [`crate::async_trait`] proc_macro to define the trait.
+/// ```
+/// #[async_trait]
+/// pub trait BasicConfigHook {
+///     async fn fetch(&mut self) -> Result<Vec<u8>>;
+///     async fn size(&mut self) -> Result<u64>;
+///     async fn update(&mut self, data: Vec<u8>) -> Result<()>;
+///     
+///     async fn tick(&mut self);
+///     fn tick_interval(&self) -> Duration;
+/// }
+/// ```
 pub trait BasicConfigHook {
     /// Fetch the data
     async fn fetch(&mut self) -> Result<Vec<u8>>;

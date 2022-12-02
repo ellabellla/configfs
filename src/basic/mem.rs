@@ -42,6 +42,8 @@ impl From<&MemNode> for EntryType {
     }
 }
 
+/// # Memory Directory
+/// Functions as a non-persistent ram-based filesystem
 pub struct MemDir {
     tree: Arc<RwLock<HashMap<String, MemNode>>>
 }
@@ -454,6 +456,8 @@ impl ComplexConfigHook for MemDir {
     }
 }
 
+/// # Memory File
+/// Functions as a non-persistent ram based file
 pub struct MemFile {
     data: Vec<u8>
 }
