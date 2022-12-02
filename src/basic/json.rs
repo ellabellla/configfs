@@ -52,6 +52,31 @@ impl Size for Value {
 }
 
 #[derive(Debug)]
+/// # JSON Config
+/// Represents a JSON file as a directory structure. 
+/// 
+/// Objects/arrays are directories. Strings/numbers/bools are files. When data is written to a file it is interpreted as JSON and evaluated as a filesystem structure. All input must be valid JSON. The JSON of objects and arrays can be edited by modifying the ".^" file inside the directory representing it. 
+/// 
+/// The configuration can also optionally periodically written back to the input file.
+/// 
+/// ## Create New
+/// ```
+/// let path = "config.js";
+/// 
+/// fs::File::create(path).await.unwrap();
+/// let config = JsonConfig::new_obj(Some((path, Duration::from_secs(1))));
+/// ```
+/// 
+/// ## From a JSON File
+/// ```
+/// let path = "config.js";
+///           
+/// let json = fs::read_to_string(path).await.unwrap();
+/// let mut json_config: JsonConfig = serde_json::from_str(&json).unwrap();
+/// json_config.set_output(Some((path, Duration::from_secs(1))));
+/// 
+/// let config: Configuration = json_config.into();
+/// ```
 pub struct JsonConfig {
     root: Value,
     output: Option<String>,
@@ -88,6 +113,7 @@ impl Into<Configuration> for JsonConfig {
 }
 
 impl JsonConfig {
+    /// Create a new configure with an object as it's root value.
     pub fn new_obj(output: Option<(&str, Duration)>) -> Configuration {
         let (output, interval) = if let Some((output, interval)) = output {
             (Some(output.to_string()), interval)
@@ -97,6 +123,7 @@ impl JsonConfig {
         Configuration::Complex(Arc::new(RwLock::new(JsonConfig{root: Value::Object(Map::new()), output, interval, modified: false})))
     } 
 
+    /// Create a new configure with an array as it's root value.
     pub fn new_arr(output: Option<(&str, Duration)>) -> Configuration {
         let (output, interval) = if let Some((output, interval)) = output {
             (Some(output.to_string()), interval)
@@ -106,6 +133,7 @@ impl JsonConfig {
         Configuration::Complex(Arc::new(RwLock::new(JsonConfig{root: Value::Array(Vec::new()), output, interval, modified: false})))
     } 
 
+    /// Set the output settings. Some((output location, save interval))
     pub fn set_output(&mut self, output: Option<(&str, Duration)>) {
         let (output, interval) = if let Some((output, interval)) = output {
             (Some(output.to_string()), interval)
@@ -350,7 +378,7 @@ impl ComplexConfigHook for JsonConfig {
 
     async fn mk_data(&mut self, parent: &Vec<&str>, name: &str) -> Result<()>{
         self.modified = true;
-        
+
         let parent = self.find_path_mut(parent)?;
         let Err(_) = JsonConfig::get(name, parent) else {
             return Err(Errno::new_exist())

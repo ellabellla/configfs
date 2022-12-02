@@ -12,6 +12,8 @@ pub(crate) enum PathPair {
     Pair(Configuration, Configuration)
 }
 
+/// # Mount
+/// Connects the config filesystem to config interfaces through a directory structure.
 pub struct Mount {
     mounts: Vec<(Vec<String>, Configuration)>,
     configs: Option<HashSet<Configuration>>,
@@ -57,6 +59,8 @@ impl Mount {
         }
     }
 
+
+    /// Spawn threads to tick each mounted config interface at it's tick interval.
     pub async fn spawn_tickers(&mut self) -> Vec<JoinHandle<()>> {
         let Some(configs) = &self.configs else {
             return vec![]
@@ -103,6 +107,7 @@ impl Mount {
         }
     }
 
+    /// Mount a config interface at a given path
     pub fn mount(&mut self, path: &str, config: Configuration) -> Option<()> {
         let path = split_path(path);
         for (m_path, _) in self.mounts.iter() {
@@ -115,6 +120,7 @@ impl Mount {
         Some(())
     }
 
+    /// Unmount the config interface at a given path
     pub fn unmount(&mut self, path: &str) {
         let path = split_path(path);
         let mut to_remove = None;
@@ -178,6 +184,7 @@ impl Mount {
         }
     }
 
+    /// Resolve the path to a config interface and a path inside the config interface. If the path doesn't point to a config interface it returns None.
     pub fn resolve<'a>(&self, path: &'a str) -> Option<(Configuration, Vec<&'a str>)> {
         let path= split_path(path);
         let mut resolved: Option<(usize, Vec<&str>)> = None;
@@ -201,6 +208,7 @@ impl Mount {
         }
     }
 
+    /// If the path doesn't point to a config interface it will return all the entires at that path. Otherwise it returns None. An entry is a config interface or child directory.
     pub fn entries(&self, path: &str) -> Option<Vec<(String, EntryType)>> {
         let path= split_path(path);
         let mut entries = HashSet::new();
@@ -226,6 +234,7 @@ impl Mount {
         }
     }
 
+    /// Check if a given path is apart of the Mount directory structure. This will not return true if the path is inside a config interface.
     pub fn contains(&self, path: & str) -> bool {
         let path= split_path(path);
         for (m_path, _) in self.mounts.iter() {

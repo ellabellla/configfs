@@ -69,7 +69,10 @@ fn create_dir_attr(files: u32) -> FileAttr {
     }
 }
 
+/// # FS
+/// Handles IO requests and routes them to config interfaces.
 impl FS {
+    /// Mount the filesystem. Returns a join handle to the thread handling io requests.
     pub async fn mount(name: &str, mount_path: &str, mount: FSMount) -> io::Result<JoinHandle<io::Result<()>>> {
         let ticker_handles = mount.write().await.spawn_tickers().await;
         let fs = FS{
