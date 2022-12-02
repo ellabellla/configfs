@@ -452,6 +452,8 @@ impl ComplexConfigHook for JsonConfig {
             return;
         }
 
+        self.modified = false;
+
         let value = self.root.clone();
         let output = self.output.clone();
         let Some(output) = output else {return };
