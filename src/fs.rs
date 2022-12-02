@@ -1,6 +1,6 @@
 use bytes::BytesMut;
 use fuse3::{path::{PathFilesystem, reply::{DirectoryEntry, DirectoryEntryPlus, ReplyDirectoryPlus, ReplyCreated, ReplyEntry, ReplyAttr, FileAttr}, Session}, async_trait, raw::{Request, reply::{ReplyLSeek, ReplyWrite, ReplyData, ReplyOpen}}, SetAttr, FileType};
-use futures_util::stream::{Empty, Iter};
+use futures_util::stream::{Iter};
 use futures_util::{stream};
 use fuse3::{Errno, MountOptions, Result};
 use tokio::{sync::RwLock, task::JoinHandle};
@@ -115,7 +115,7 @@ impl FS {
 
 #[async_trait]
 impl PathFilesystem for FS {
-    type DirEntryStream = Empty<Result<DirectoryEntry>>;
+    type DirEntryStream = Iter<IntoIter<Result<DirectoryEntry>>>;
     type DirEntryPlusStream = Iter<IntoIter<Result<DirectoryEntryPlus>>>;
     
     async fn init(&self, _req: Request) -> Result<()> {
@@ -565,6 +565,18 @@ impl PathFilesystem for FS {
        Ok(())
     }
 
+    async fn opendir(
+        &self,
+        _req: Request,
+        _path: &OsStr,
+        _flags: u32
+    ) -> Result<ReplyOpen> {
+        Ok(ReplyOpen{
+            fh: 0,
+            flags: 0,
+        })
+    }
+    
     async fn readdirplus(
         &self,
         _req: Request,
