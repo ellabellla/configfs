@@ -11,6 +11,8 @@ use crate::{config::{EntryType, Configuration}, mount::{FSMount, PathPair}};
 
 const TTL: Duration = Duration::from_secs(1);
 
+/// # FS
+/// Handles IO requests and routes them to config interfaces.
 pub struct FS {
     mount: FSMount,
     open: Arc<RwLock<HashMap<u64, (String, Vec<u8>)>>>,
@@ -69,8 +71,6 @@ fn create_dir_attr(files: u32) -> FileAttr {
     }
 }
 
-/// # FS
-/// Handles IO requests and routes them to config interfaces.
 impl FS {
     /// Mount the filesystem. Returns a join handle to the thread handling io requests.
     pub async fn mount(name: &str, mount_path: &str, mount: FSMount) -> io::Result<JoinHandle<io::Result<()>>> {
