@@ -56,6 +56,7 @@ pub struct JsonConfig {
     root: Value,
     output: Option<String>,
     interval: Duration,
+    modified:  bool,
 }
 
 impl Serialize for JsonConfig {
@@ -75,7 +76,7 @@ impl<'de> Deserialize<'de> for JsonConfig {
         if !matches!(root, Value::Array(_)) && !matches!(root, Value::Object(_)) {
             Err(serde::de::Error::custom("Root value must be an object or array."))
         } else {
-            Ok(JsonConfig{root, output: None, interval: Duration::from_secs(0)})
+            Ok(JsonConfig{root, output: None, interval: Duration::from_secs(0), modified: false})
         }
     }
 }
@@ -93,7 +94,7 @@ impl JsonConfig {
         } else {
             (None, Duration::from_secs(0))
         };
-        Configuration::Complex(Arc::new(RwLock::new(JsonConfig{root: Value::Object(Map::new()), output, interval})))
+        Configuration::Complex(Arc::new(RwLock::new(JsonConfig{root: Value::Object(Map::new()), output, interval, modified: false})))
     } 
 
     pub fn new_arr(output: Option<(&str, Duration)>) -> Configuration {
@@ -102,7 +103,7 @@ impl JsonConfig {
         } else {
             (None, Duration::from_secs(0))
         };
-        Configuration::Complex(Arc::new(RwLock::new(JsonConfig{root: Value::Array(Vec::new()), output, interval})))
+        Configuration::Complex(Arc::new(RwLock::new(JsonConfig{root: Value::Array(Vec::new()), output, interval, modified: false})))
     } 
 
     pub fn set_output(&mut self, output: Option<(&str, Duration)>) {
@@ -348,6 +349,8 @@ impl ComplexConfigHook for JsonConfig {
     }
 
     async fn mk_data(&mut self, parent: &Vec<&str>, name: &str) -> Result<()>{
+        self.modified = true;
+        
         let parent = self.find_path_mut(parent)?;
         let Err(_) = JsonConfig::get(name, parent) else {
             return Err(Errno::new_exist())
@@ -355,6 +358,8 @@ impl ComplexConfigHook for JsonConfig {
         JsonConfig::insert(parent, name, Value::Null)
     }
     async fn mk_obj(&mut self, parent: &Vec<&str>, name: &str) -> Result<()>{
+        self.modified = true;
+
         let parent = self.find_path_mut(parent)?;
         let Err(_) = JsonConfig::get(name, parent) else {
             return Err(Errno::new_exist())
@@ -362,6 +367,8 @@ impl ComplexConfigHook for JsonConfig {
         JsonConfig::insert(parent, name, Value::Object(Map::new()))
     }
     async fn mv(&mut self, parent: &Vec<&str>, new_parent: &Vec<&str>, name: &str, new_name: &str) -> Result<()>{
+        self.modified = true;
+
         let _ = self.find_path(new_parent)?;
         let parent = self.find_path_mut(parent)?;
         let value = JsonConfig::remove(name, parent)?;
@@ -370,6 +377,8 @@ impl ComplexConfigHook for JsonConfig {
         JsonConfig::insert(new_parent, new_name, value)
     }
     async fn rm(&mut self, parent: &Vec<&str>, name: &str) -> Result<()>{
+        self.modified = true;
+
         let parent = self.find_path_mut(parent)?;
         JsonConfig::remove(name, parent)?;
         Ok(())
@@ -378,6 +387,8 @@ impl ComplexConfigHook for JsonConfig {
         if name == new_name {
             return Ok(())
         }
+
+        self.modified = true;
 
         let parent = self.find_path_mut(parent)?;
         if let Value::Array(_) = parent {
@@ -399,6 +410,8 @@ impl ComplexConfigHook for JsonConfig {
         Ok(value.byte_len())
     }
     async fn update(&mut self, data_node: &Vec<&str>, data: Vec<u8>) -> Result<()>{
+        self.modified = true;
+
         let value = self.find_path_mut(data_node)?;
         let str = String::from_utf8(data).map_err(|_| Errno::from(libc::EIO))?;
         let new_value: Value = serde_json::from_str(&str).map_err(|_| Errno::from(libc::EIO))?;
@@ -407,9 +420,14 @@ impl ComplexConfigHook for JsonConfig {
     }
 
     async fn tick(&mut self) {
+        if !self.modified {
+            return;
+        }
+
         let value = self.root.clone();
         let output = self.output.clone();
         let Some(output) = output else {return };
+        
         let Ok(data) = serde_json::to_string_pretty(&value) else {return};
         if tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let mut file = std::fs::File::create(output)?;
@@ -442,8 +460,8 @@ mod tests {
         serde_json::from_str::<JsonConfig>("true").unwrap_err();
         let _: JsonConfig = serde_json::from_str("{}").unwrap();
         let _: JsonConfig = serde_json::from_str("[]").unwrap();
-        assert_eq!(serde_json::to_string(&JsonConfig{root: Value::Array(Vec::new()), output: None, interval: Duration::from_secs(0)}).unwrap(), "[]");
-        assert_eq!(serde_json::to_string(&JsonConfig{root: Value::Object(Map::new()), output: None, interval: Duration::from_secs(0)}).unwrap(), "{}");
+        assert_eq!(serde_json::to_string(&JsonConfig{root: Value::Array(Vec::new()), output: None, interval: Duration::from_secs(0), modified: false}).unwrap(), "[]");
+        assert_eq!(serde_json::to_string(&JsonConfig{root: Value::Object(Map::new()), output: None, interval: Duration::from_secs(0), modified: false}).unwrap(), "{}");
     }
 
     #[tokio::test]
