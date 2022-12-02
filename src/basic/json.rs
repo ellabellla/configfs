@@ -11,8 +11,12 @@ use crate::{ComplexConfigHook, EntryType, Configuration};
 
 const CONTAINING_DATA: &'static str = ".^";
 
-impl From<&Value> for EntryType {
-    fn from(v: &Value) -> Self {
+impl From<(&str, &Value)> for EntryType {
+    fn from(v: (&str, &Value)) -> Self {
+        let (k, v) = v;
+        if k == CONTAINING_DATA {
+            return EntryType::Data
+        }
         match v {
             Value::Null => EntryType::Data,
             Value::Bool(_) => EntryType::Data,
@@ -25,12 +29,15 @@ impl From<&Value> for EntryType {
 }
 
 trait Size {
-    fn len(&self) -> u64 ;
+    fn len(&self, name: &str) -> u64 ;
     fn byte_len(&self) -> u64 ;
 }
 
 impl Size for Value {
-    fn len(&self) -> u64  {
+    fn len(&self, name: &str) -> u64  {
+        if name == CONTAINING_DATA {
+            return self.byte_len()
+        }
         match self {
             Value::Array(arr) => arr.len() as u64 + 1,
             Value::Object(obj) => obj.len() as u64 + 1,
@@ -124,7 +131,7 @@ impl JsonConfig {
                 } else if index == arr.len() {
                     arr.push(child);
                 } else {
-                    return Err(libc::EACCES.into())
+                    return Err(libc::EIO.into())
                 }
             },
             Value::Object(obj) => {
@@ -137,7 +144,7 @@ impl JsonConfig {
 
     fn remove<'a>(key: &str, value: &'a mut Value) -> Result<Value> {
         if key == CONTAINING_DATA {
-            return Err(libc::EACCES.into());
+            return Ok(value.clone());
         }
 
         Ok(match value {
@@ -223,11 +230,15 @@ impl JsonConfig {
 
     fn find_path(&self, path: &Vec<&str>) -> Result<&Value> {
         let mut value = &self.root;
-        let mut path = path.iter();
+        let mut path = path.iter().peekable();
 
         while let Some(key) = path.next() {
             if *key == CONTAINING_DATA {
-                continue;
+                if matches!(path.peek(), None) {
+                    continue;
+                } else {
+                    return Err(Errno::new_not_exist())
+                }
             }
 
             value = JsonConfig::get(*key, value)?;
@@ -238,11 +249,15 @@ impl JsonConfig {
 
     fn find_path_mut(&mut self, path: &Vec<&str>) -> Result<&mut Value> {
         let mut value = &mut self.root;
-        let mut path = path.iter();
+        let mut path = path.iter().peekable();
 
         while let Some(key) = path.next() {
             if *key == CONTAINING_DATA {
-                continue;
+                if matches!(path.peek(), None) {
+                    continue;
+                } else {
+                    return Err(Errno::new_not_exist())
+                }
             }
 
             value = JsonConfig::get_mut(*key, value)?;
@@ -253,11 +268,15 @@ impl JsonConfig {
 
     fn find(&self, parent: &Vec<&str>, name: &str) -> Result<&Value> {
         let mut value = &self.root;
-        let mut ancestors = parent.iter();
+        let mut ancestors = parent.iter().peekable();
 
         while let Some(key) = ancestors.next() {
             if *key == CONTAINING_DATA {
-                continue;
+                if matches!(ancestors.peek(), None) {
+                    continue;
+                } else {
+                    return Err(Errno::new_not_exist())
+                }
             }
 
             value = JsonConfig::get(*key, value)?;
@@ -273,11 +292,15 @@ impl JsonConfig {
     #[allow(dead_code)]
     fn find_mut(&mut self, parent: &Vec<&str>, name: &str) -> Result<&mut Value> {
         let mut value = &mut self.root;
-        let mut ancestors = parent.iter();
+        let mut ancestors = parent.iter().peekable();
 
         while let Some(key) = ancestors.next() {
             if *key == CONTAINING_DATA {
-                continue;
+                if matches!(ancestors.peek(), None) {
+                    continue;
+                } else {
+                    return Err(Errno::new_not_exist())
+                }
             }
 
             value = JsonConfig::get_mut(*key, value)?;
@@ -313,11 +336,12 @@ impl ComplexConfigHook for JsonConfig {
     }
     async fn lookup(&self, parent: &Vec<&str>, name: &str) -> Result<(EntryType, u64)>{
         let value = self.find(parent, name)?;
-        Ok((EntryType::from(value), value.len()))
+        Ok((EntryType::from((name, value)), value.len(name)))
     }
     async fn lookup_path(&self, path: &Vec<&str>) -> Result<(EntryType, u64)> {
         let value = self.find_path(path)?;
-        Ok((EntryType::from(value), value.len()))
+        let name = path.last().map(|s| *s).unwrap_or("");
+        Ok((EntryType::from((name, value)), value.len(name)))
     }
     async fn contains(&self, parent: &Vec<&str>, name: &str) -> bool {
         self.find(parent, name).is_ok()
@@ -437,6 +461,9 @@ mod tests {
         let sort = |mut v:Vec<_>| {v.sort(); v};
 
         assert_eq!(obj.entires(&vec![]).await.unwrap(), vec![".^"]);
+
+        assert!(obj.entires(&vec![".^", ".^"]).await.is_err());
+        assert_eq!(obj.lookup_path(&vec![".^"]).await.unwrap(), (EntryType::Data, "[]".as_bytes().len() as u64));
 
         obj.mk_data(&vec![], "null").await.unwrap();
         obj.update(&vec!["null"], "null".as_bytes().to_vec()).await.unwrap();
