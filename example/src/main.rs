@@ -271,7 +271,7 @@ pub async fn main() {
         let mut mnt = mount.write().await;
         mnt.mount("/", LoaderConfig::new());
     }
-    FS::mount("test", &mnt, mount)
+    FS::mount("Dynamic JSON FS", &mnt, mount)
         .await
         .unwrap()
         .await
