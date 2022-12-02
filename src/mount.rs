@@ -63,7 +63,10 @@ impl Mount {
         };
         let mut join_handles = Vec::with_capacity(configs.len());
         for config in configs {
-            join_handles.push(self.spawn_ticker(config, config.tick_interval().await));
+            let interval = config.tick_interval().await;
+            if interval.as_nanos() != 0 {
+                join_handles.push(self.spawn_ticker(config, interval));
+            }
         }
         self.configs = None;
         join_handles

@@ -372,8 +372,8 @@ impl PathFilesystem for FS {
         Ok(())
     }
 
-    async fn open(&self, _req: Request, path: &OsStr, _flags: u32) -> Result<ReplyOpen> {
-        println!("OPEN");
+    async fn open(&self, _req: Request, path: &OsStr, flags: u32) -> Result<ReplyOpen> {
+        println!("OPEN {:?}", path);
         let mount = self.mount.read().await;
         let path_str = path.to_string_lossy().to_string();
         let (config, path) = mount.resolve(&path_str).ok_or_else(|| Errno::from(libc::EACCES))?;
@@ -383,6 +383,7 @@ impl PathFilesystem for FS {
             Configuration::Complex(complex) =>  {
                 let mut config = complex.write().await;
                 let (entry_type, _) = config.lookup_path(&path).await?; 
+                println!("OPEN 2 {:?}", path);
                 if !matches!(entry_type, EntryType::Data) {
                     return Err(Errno::new_is_dir())
                 }
@@ -390,10 +391,15 @@ impl PathFilesystem for FS {
             },
         };
         
-        let fh = self.open(&path_str, data).await;
+        let fh = if libc::O_TRUNC & (flags as i32) != 0 {
+            self.open(&path_str, vec![]).await
+        } else {
+            self.open(&path_str, data).await
+        };
+
         Ok(ReplyOpen { 
             fh, 
-            flags: 0
+            flags
         })
     }
 
@@ -521,7 +527,7 @@ impl PathFilesystem for FS {
         _mode: u32,
         _flags: u32,
     ) -> Result<ReplyCreated> {
-        println!("CREATE");
+        println!("CREATE {:?} {:?}", parent, name);
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
         let file_path = format!("{}/{}", parent, name.to_string_lossy().to_string());
@@ -640,10 +646,31 @@ impl PathFilesystem for FS {
         &self,
         _req: Request,
         _path: Option<&OsStr>,
-        _fh: u64,
+        fh: u64,
         offset: u64,
-        _whence: u32,
+        whence: u32,
     ) -> Result<ReplyLSeek> {
+        print!("LSEEK");
+        let open = self.open.read().await;
+        let Some((_, data)) = open.get(&fh) else {
+            return Err(Errno::new_not_exist())
+        };
+        let size = data.len();
+        
+        let whence = whence as i32;
+
+        let offset = if whence == libc::SEEK_CUR || whence == libc::SEEK_SET {
+            offset
+        } else if whence == libc::SEEK_END {
+            if size >= offset as _ {
+                size as u64 - offset
+            } else {
+                0
+            }
+        } else {
+            return Err(libc::EINVAL.into());
+        };
+
         Ok(ReplyLSeek { offset })
     }
 }
