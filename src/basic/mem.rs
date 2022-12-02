@@ -1,4 +1,4 @@
-use std::{sync::Arc, collections::HashMap};
+use std::{sync::Arc, collections::HashMap, time::Duration};
 
 use fuse3::{async_trait, Result, Errno};
 use tokio::sync::RwLock;
@@ -444,6 +444,14 @@ impl ComplexConfigHook for MemDir {
             }
         }
     }
+
+    async fn tick(&mut self) {
+            
+    }
+
+    fn tick_interval(&self) -> Duration {
+        Duration::from_secs(0)
+    }
 }
 
 pub struct MemFile {
@@ -467,6 +475,13 @@ impl BasicConfigHook for MemFile {
     async fn update(&mut self, data: Vec<u8>) -> Result<()> {
         self.data = data;
         Ok(())
+    }
+    
+    async fn tick(&mut self) {
+        
+    }
+    fn tick_interval(&self) -> Duration {
+        Duration::from_secs(0)
     }
 }
 
@@ -503,7 +518,7 @@ mod tests {
         assert_eq!(sort(dir.entires(&vec![]).await.unwrap()), vec!["dir".to_string(), "file".to_string()]);
         assert_eq!(sort(dir.entires(&vec!["dir"]).await.unwrap()), vec!["file".to_string()]);
 
-        assert_eq!(dir.fetch(&vec!["file"]).await.unwrap(), vec![]);
+        assert_eq!(dir.fetch(&vec!["file"]).await.unwrap(), Vec::<u8>::new());
         dir.update(&vec!["file"], vec![0x1]).await.unwrap();
         assert_eq!(dir.fetch(&vec!["file"]).await.unwrap(), vec![0x1]);
         assert_eq!(dir.size(&vec!["file"]).await.unwrap(), 1);
@@ -529,7 +544,7 @@ mod tests {
         };
         let mut file = file.write().await;
 
-        assert_eq!(file.fetch().await.unwrap(), vec![]);
+        assert_eq!(file.fetch().await.unwrap(), Vec::<u8>::new());
         assert_eq!(file.size().await.unwrap(), 0);
         file.update(vec![0x1]).await.unwrap();
         assert_eq!(file.fetch().await.unwrap(), vec![0x1]);

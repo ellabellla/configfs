@@ -1,6 +1,6 @@
-use std::{sync::Arc, iter, collections::HashSet};
+use std::{sync::Arc, iter, collections::HashSet, time::Duration};
 
-use tokio::sync::RwLock;
+use tokio::{sync::RwLock, task::JoinHandle, time};
 
 use crate::{config::{Configuration, EntryType}, fs::split_path};
 
@@ -14,11 +14,12 @@ pub(crate) enum PathPair {
 
 pub struct Mount {
     mounts: Vec<(Vec<String>, Configuration)>,
+    configs: Option<HashSet<Configuration>>,
 }
 
 impl Mount {
     pub fn new() -> FSMount {
-        Arc::new(RwLock::new(Mount{mounts: Vec::new()}))
+        Arc::new(RwLock::new(Mount{mounts: Vec::new(),  configs: Some(HashSet::new())}))
     }
 
     fn eq(mount: &Vec<String>, path: &Vec<&str>) -> bool {
@@ -56,6 +57,49 @@ impl Mount {
         }
     }
 
+    pub async fn spawn_tickers(&mut self) -> Vec<JoinHandle<()>> {
+        let Some(configs) = &self.configs else {
+            return vec![]
+        };
+        let mut join_handles = Vec::with_capacity(configs.len());
+        for config in configs {
+            join_handles.push(self.spawn_ticker(config, config.tick_interval().await));
+        }
+        self.configs = None;
+        join_handles
+    }
+
+    fn spawn_ticker(&self, config: &Configuration, interval: Duration) -> JoinHandle<()> {
+        match config {
+            Configuration::Basic(config) => {
+                let config = config.clone();
+                tokio::spawn(async move {
+                    let mut interval = time::interval(interval);
+            
+                    loop {
+                        interval.tick().await;
+                        let mut config = config.write().await;
+                        config.tick().await;
+                        drop(config)
+                    }
+                })
+            },
+            Configuration::Complex(config) => {
+                let config = config.clone();
+                tokio::spawn(async move {
+                    let mut interval = time::interval(interval);
+            
+                    loop {
+                        interval.tick().await;
+                        let mut config = config.write().await;
+                        config.tick().await;
+                        drop(config)
+                    }
+                })
+            },
+        }
+    }
+
     pub fn mount(&mut self, path: &str, config: Configuration) -> Option<()> {
         let path = split_path(path);
         for (m_path, _) in self.mounts.iter() {
@@ -63,8 +107,8 @@ impl Mount {
                 return None
             }
         }
-
-        self.mounts.push((path.iter().map(|s| s.to_string()).collect(), config));
+        self.mounts.push((path.iter().map(|s| s.to_string()).collect(), config.clone()));
+        self.configs.as_mut().map(|c| c.insert(config.clone()));
         Some(())
     }
 
@@ -79,7 +123,8 @@ impl Mount {
         }
 
         if let Some(i) = to_remove {
-            self.mounts.remove(i);
+            let config = &self.mounts.remove(i).1.clone();
+            self.configs.as_mut().map(|c| c.remove(&config));
         }
     }
 
@@ -193,6 +238,8 @@ impl Mount {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use fuse3::{async_trait, Result, Errno};
 
     use crate::config::{ComplexConfigHook, EntryType};
@@ -246,6 +293,13 @@ mod tests {
         }
         async fn update(&mut self, _data_node: &Vec<&str>, _data: Vec<u8>) -> Result<()>{
             Err(Errno::new_not_exist())
+        }
+
+        async fn tick(&mut self) {
+            
+        }
+        fn tick_interval(&self) -> Duration {
+            Duration::from_secs(0)
         }
     }
 

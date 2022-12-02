@@ -71,6 +71,7 @@ fn create_dir_attr(files: u32) -> FileAttr {
 
 impl FS {
     pub async fn mount(name: &str, mount_path: &str, mount: FSMount) -> io::Result<JoinHandle<io::Result<()>>> {
+        let ticker_handles = mount.write().await.spawn_tickers().await;
         let fs = FS{
             mount,
             open: Arc::new(RwLock::new(HashMap::new())), 
@@ -86,11 +87,13 @@ impl FS {
         
         let join = tokio::spawn(async {
             let res = handle.await;
+            for handle in ticker_handles {
+                handle.await.ok();
+            }
             res
         });
         Ok(join)
     }
-
 
     async fn open(&self, path: &str, data: Vec<u8>) -> u64 {
         let mut open = self.open.write().await;
@@ -647,22 +650,59 @@ impl PathFilesystem for FS {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs::{self}, io::{ErrorKind, Write}};
+    use std::{fs::{self}, io::{ErrorKind, Write}, time::Duration, sync::Arc};
 
-    use crate::{mount::Mount, basic::mem::{MemDir, MemFile}};
+    use fuse3::{Errno, async_trait};
+    use tokio::sync::RwLock;
+
+    use crate::{mount::Mount, basic::mem::{MemDir, MemFile}, BasicConfigHook, Result, Configuration};
 
     use super::FS;
+
+    struct Ticker;
+
+    impl Ticker {
+        pub fn new() -> Configuration {
+            Configuration::Basic(Arc::new(RwLock::new(Ticker)))
+        }
+    }
+    
+    #[async_trait]
+    impl BasicConfigHook for Ticker {
+        async fn fetch(&mut self) -> Result<Vec<u8>> {
+            Err(Errno::new_not_exist())
+        }
+        async fn size(&mut self) -> Result<u64> {
+            Err(Errno::new_not_exist())
+        }
+        async fn update(&mut self, _data: Vec<u8>) -> Result<()> {
+            Err(Errno::new_not_exist())
+        }
+        
+        async fn tick(&mut self) {
+            println!("ticked {:p}", self);
+        }
+        fn tick_interval(&self) -> Duration {
+            Duration::from_millis(500)
+        }
+
+    }
+    
 
     #[tokio::test] 
     async fn test() {
         fs::create_dir_all("tmp").unwrap();
         let tmp =tempfile::TempDir::new_in("tmp").unwrap();
         println!("{:?}", tmp.path());
+        let ticker = Ticker::new();
         let mount = Mount::new();
         {
             let mut mnt = mount.write().await;
             mnt.mount("/dir", MemDir::new());
             mnt.mount("/file", MemFile::new());
+            mnt.mount("/ticker1", ticker.clone());
+            mnt.mount("/ticker1_clone", ticker);
+            mnt.mount("/ticker2", Ticker::new());
         }
         let fs = FS::mount("test", tmp.path().to_str().unwrap(), mount);
         let mount_handle = fs.await.unwrap();
