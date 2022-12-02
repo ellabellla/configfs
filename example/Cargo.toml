@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-configfs = { path = "../" }
+configfs = { path = "../", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
 libc = "0.2"
+serde_json = "1.0.89"
