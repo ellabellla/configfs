@@ -6,11 +6,13 @@ ConfigFS is a library for creating filesystem's that allow users to view and mod
 ```rust
 struct FavNumberConfig {
     fav_number: i64,
+    output: String,
+    modified: bool,
 }
 
 impl FavNumberConfig {
-    pub fn new(fav_number: i64) -> Configuration {
-        Configuration::Basic(Arc::new(RwLock::new(FavNumberConfig{fav_number})))
+    pub fn new(fav_number: i64, output: String) -> Configuration {
+        Configuration::Basic(Arc::new(RwLock::new(FavNumberConfig{fav_number, output, modified: false})))
     }
 }
 
@@ -19,24 +21,35 @@ impl BasicConfigHook for FavNumberConfig {
     async fn fetch(&mut self) -> Result<Vec<u8>> {
         Ok(format!("{}", self.fav_number).as_bytes().to_vec())
     }
+    
     async fn size(&mut self) -> Result<u64> {
         Ok(format!("{}", self.fav_number).as_bytes().len() as u64)
     }
+
     async fn update(&mut self, data: Vec<u8>) -> Result<()> {
         let input = String::from_utf8(data).map_err(|_| Errno::from(libc::EIO))?;
         let number = i64::from_str_radix(&input, 10).map_err(|_| Errno::from(libc::EIO))?;
 
         self.fav_number = number;
         println!("My new favourite number is {}", number);
-
+        self.modified = true;
         Ok(())
     }
     
     async fn tick(&mut self) {
+        if !self.modified {
+            return
+        }
 
+        self.modified = false;
+        let mut Ok(file) = fs::File::create(&self.output).await else {
+            return
+        };
+        file.write_all(format!("{}", self.fav_number).as_bytes()).await.ok();
     }
+
     fn tick_interval(&self) -> Duration {
-        Duration::from_secs(0)
+        Duration::from_secs(1)
     }
 }
 ```
