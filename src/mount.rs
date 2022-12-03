@@ -62,7 +62,7 @@ impl Mount {
     }
 
 
-    /// Spawn threads to tick each mounted config interface at it's tick interval.
+    /// Spawn threads to tick each mounted config interface at it's tick interval. This will only have an effect the first time it is called even if more configs are mounted after calling it. Use [`crate::Mount::spawn_ticker`] if more ticker threads are needed after the initial call.
     pub async fn spawn_tickers(&mut self) -> Vec<JoinHandle<()>> {
         let Some(configs) = &self.configs else {
             return vec![]
@@ -78,7 +78,8 @@ impl Mount {
         join_handles
     }
 
-    fn spawn_ticker(&self, config: &Configuration, interval: Duration) -> JoinHandle<()> {
+    /// Spawn a thread to tick a configuration at it's desired tick interval. 
+    pub fn spawn_ticker(&self, config: &Configuration, interval: Duration) -> JoinHandle<()> {
         match config {
             Configuration::Basic(config) => {
                 let config = config.clone();

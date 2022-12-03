@@ -73,6 +73,8 @@ fn create_dir_attr(files: u32) -> FileAttr {
 
 impl FS {
     /// Mount the filesystem. Returns a join handle to the thread handling io requests.
+    /// 
+    /// Ticker threads will be created for each unique Config interface automatically. Configs interfaces mounted after the filesystem is mounted will need to have their ticker threads manually created. 
     pub async fn mount(name: &str, mount_path: &str, mount: FSMount) -> io::Result<JoinHandle<io::Result<()>>> {
         let ticker_handles = mount.write().await.spawn_tickers().await;
         let fs = FS{
