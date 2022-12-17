@@ -1,4 +1,4 @@
-# ConfigFS: Everything Should Be An Object
+# ConfigFS: Everything Should Be A File
 
 ConfigFS is a library for creating filesystem's that allow users to view and modify structured data and settings. It is inspired by another filesystem of the same name, ConfigFS, a ram based filesystem on linux that allows users to configure kernel objects.
 
