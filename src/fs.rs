@@ -130,7 +130,7 @@ impl PathFilesystem for FS {
     async fn destroy(&self, _req: Request) {}
 
     async fn lookup(&self, _req: Request, parent: &OsStr, name: &OsStr) -> Result<ReplyEntry> {
-        println!("LOOKUP {:?} {:?}", parent, name);
+// println!("LOOKUP {:?} {:?}", parent, name);
         let mount = self.mount.read().await;
         let parent = format!("{}/{}", parent.to_string_lossy().to_string(), name.to_string_lossy().to_string());
         let Some((config, path)) = mount.resolve(&parent) else {
@@ -165,7 +165,7 @@ impl PathFilesystem for FS {
         fh: Option<u64>,
         _flags: u32,
     ) -> Result<ReplyAttr> {
-        println!("GETATTR {:?}, {:?}", path, fh);
+// println!("GETATTR {:?}, {:?}", path, fh);
         if let Some(fh) = fh  {
             let open = self.open.read().await;
             let (_, data) = open.get(&fh).ok_or_else(|| Errno::new_not_exist())?;
@@ -211,7 +211,7 @@ impl PathFilesystem for FS {
         fh: Option<u64>,
         _set_attr: SetAttr,
     ) -> Result<ReplyAttr> {
-        println!("SETATTR");
+// println!("SETATTR");
         if let Some(fh) = fh  {
             let open = self.open.read().await;
             let (_, data) = open.get(&fh).ok_or_else(|| Errno::new_not_exist())?;
@@ -258,7 +258,7 @@ impl PathFilesystem for FS {
         _mode: u32,
         _umask: u32,
     ) -> Result<ReplyEntry> {
-        println!("MKDIR");
+// println!("MKDIR");
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
         let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::from(libc::EACCES))?;
@@ -277,7 +277,7 @@ impl PathFilesystem for FS {
     }
 
     async fn unlink(&self, _req: Request, parent: &OsStr, name: &OsStr) -> Result<()> {
-        println!("UNLINK");
+// println!("UNLINK");
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
         let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::from(libc::EACCES))?;
@@ -291,7 +291,7 @@ impl PathFilesystem for FS {
     }
 
     async fn rmdir(&self, _req: Request, parent: &OsStr, name: &OsStr) -> Result<()> {
-        println!("RMDIR");
+// println!("RMDIR");
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
         let (config, parent) = mount.resolve(&parent).ok_or_else(|| Errno::from(libc::EACCES))?;
@@ -312,7 +312,7 @@ impl PathFilesystem for FS {
         parent: &OsStr,
         name: &OsStr,
     ) -> Result<()> {
-        println!("RENAME");
+// println!("RENAME");
         let mount = self.mount.read().await;
         
         let old_parent = origin_parent.to_string_lossy().to_string();
@@ -378,7 +378,7 @@ impl PathFilesystem for FS {
     }
 
     async fn open(&self, _req: Request, path: &OsStr, flags: u32) -> Result<ReplyOpen> {
-        println!("OPEN {:?}", path);
+// println!("OPEN {:?}", path);
         let mount = self.mount.read().await;
         let path_str = path.to_string_lossy().to_string();
         let (config, path) = mount.resolve(&path_str).ok_or_else(|| Errno::from(libc::EACCES))?;
@@ -388,7 +388,6 @@ impl PathFilesystem for FS {
             Configuration::Complex(complex) =>  {
                 let mut config = complex.write().await;
                 let (entry_type, _) = config.lookup_path(&path).await?; 
-                println!("OPEN 2 {:?}", path);
                 if !matches!(entry_type, EntryType::Data) {
                     return Err(Errno::new_is_dir())
                 }
@@ -416,7 +415,7 @@ impl PathFilesystem for FS {
         offset: u64,
         size: u32,
     ) -> Result<ReplyData> {
-        println!("READ");
+// println!("READ");
         let open = self.open.read().await;
 
         let Some((_, data)) = open.get(&fh) else {
@@ -451,7 +450,7 @@ impl PathFilesystem for FS {
         data: &[u8],
         _flags: u32,
     ) -> Result<ReplyWrite> {
-        println!("WRITE");
+// println!("WRITE");
         let mut open = self.open.write().await;
 
         let Some((_, file_data)) = open.get_mut(&fh) else {
@@ -484,7 +483,7 @@ impl PathFilesystem for FS {
         _lock_owner: u64,
         _flush: bool,
     ) -> Result<()> {
-        println!("RELEASE");
+// println!("RELEASE");
         let Some((path, data)) = self.release(fh).await else {
             return Err(Errno::new_not_exist())
         };
@@ -504,9 +503,29 @@ impl PathFilesystem for FS {
         &self,
         _req: Request,
         _path: Option<&OsStr>,
-        _fh: u64,
+        fh: u64,
         _datasync: bool,
     ) -> Result<()> {
+        let mut open = self.open.write().await;
+        let Some((path, data)) = open.get_mut(&fh) else {
+            return Err(Errno::new_not_exist())
+        };
+
+        let mount = self.mount.write().await;
+        let (config, path) = mount.resolve(&path).ok_or_else(|| Errno::from(libc::EACCES))?;
+
+        match config{
+            Configuration::Basic(basic) => {
+                let mut basic = basic.write().await;
+                basic.update(data.clone()).await?;
+                *data = basic.fetch().await?;
+            },
+            Configuration::Complex(complex) => {
+                let mut complex = complex.write().await;
+                complex.update(&path, data.clone()).await?;
+                *data = complex.fetch(&path).await?;
+            }
+        }
         Ok(())
     }
 
@@ -532,7 +551,7 @@ impl PathFilesystem for FS {
         _mode: u32,
         _flags: u32,
     ) -> Result<ReplyCreated> {
-        println!("CREATE {:?} {:?}", parent, name);
+// println!("CREATE {:?} {:?}", parent, name);
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
         let file_path = format!("{}/{}", parent, name.to_string_lossy().to_string());
@@ -590,7 +609,7 @@ impl PathFilesystem for FS {
         offset: u64,
         _lock_owner: u64,
     ) -> Result<ReplyDirectoryPlus<Self::DirEntryPlusStream>> {
-        println!("READDIR");
+// println!("READDIR");
         let mount = self.mount.read().await;
         let parent = parent.to_string_lossy().to_string();
         let entries = if let Some((config, parent)) = mount.resolve(&parent) {
