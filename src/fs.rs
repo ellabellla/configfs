@@ -479,13 +479,17 @@ impl PathFilesystem for FS {
         _req: Request,
         _path: Option<&OsStr>,
         fh: u64,
-        _flags: u32,
+        flags: u32,
         _lock_owner: u64,
         _flush: bool,
     ) -> Result<()> {
 // println!("RELEASE");
         let Some((path, data)) = self.release(fh).await else {
             return Err(Errno::new_not_exist())
+        };
+
+        if libc::O_RDONLY & (flags as i32) != 0 {
+            return Ok(())
         };
 
         let mount = self.mount.read().await;
